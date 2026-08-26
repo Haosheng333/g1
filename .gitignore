@@ -1,4 +1,4 @@
-# ROS 2 / colcon build outputs
+# ROS 1 / colcon build outputs
 build/
 install/
 log/
