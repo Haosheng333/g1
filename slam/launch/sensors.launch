@@ -1,0 +1,11 @@
+<launch>
+  <!-- Livox Mid-360 ROS1 driver (external package, not modified).
+       Publishes /livox/lidar and /livox/imu. -->
+  <include file="$(find livox_ros_driver2)/launch_ROS1/msg_MID360.launch"/>
+
+  <!-- Override the driver's default config path with our repository-owned,
+       version-controlled copy. Same global param name the driver itself
+       declares (no override arg exists in msg_MID360.launch), set after the
+       include so it wins on the parameter server before nodes start. -->
+  <param name="user_config_path" type="string" value="$(find g1_slam)/config/mid360_config.json"/>
+</launch>
