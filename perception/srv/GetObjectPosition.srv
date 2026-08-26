@@ -1,0 +1,9 @@
+string  label      # e.g. "bottle"; empty = any class
+int32   index      # which match to return (0-based, after sorting by base-frame z, highest first)
+---
+bool    success
+float64 x
+float64 y
+float64 z
+string  frame_id   # always the base frame name
+string  message    # human-readable failure reason
