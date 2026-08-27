@@ -21,11 +21,22 @@ LIVOX_NODE_NAME = "/livox_lidar_publisher2"
 LIDAR_TOPIC = "/livox/lidar"
 IMU_TOPIC = "/livox/imu"
 
+FASTLIO_NODE_NAME = "/laserMapping"
+ODOM_TOPIC = "/Odometry"
+CLOUD_TOPIC = "/cloud_registered"
+PATH_TOPIC = "/path"
+# Official LiDAR-to-IMU extrinsic for the Mid-360, from fast_lio's own
+# config/mid360.yaml. fastlio.yaml must preserve these exactly.
+EXPECTED_EXTRINSIC_T = [-0.011, -0.02329, 0.04412]
+EXPECTED_EXTRINSIC_R = [1, 0, 0, 0, 1, 0, 0, 0, 1]
+
 REQUIRED_FILES = [
     "package.xml",
     "CMakeLists.txt",
     "config/mid360_config.json",
+    "config/fastlio.yaml",
     "launch/sensors.launch",
+    "launch/fastlio_mapping.launch",
     "scripts/slam_health_check.py",
 ]
 
@@ -171,6 +182,94 @@ def check_sensors_launch(results, pkg_path, timeout):
                 "XML valid, node {} resolves".format(LIVOX_NODE_NAME))
 
 
+def check_fastlio_package(results):
+    try:
+        import rospkg
+        path = rospkg.RosPack().get_path("fast_lio")
+    except Exception as exc:
+        results.add("fast_lio package resolution", STATUS_FAIL,
+                     "package not resolvable: {}".format(exc))
+        return None
+    results.add("fast_lio package resolution", STATUS_PASS,
+                "resolved at {}".format(path))
+    return path
+
+
+def check_fastlio_yaml(results, pkg_path):
+    if pkg_path is None:
+        results.add("fastlio.yaml validity and extrinsic values", STATUS_FAIL,
+                     "cannot check, package path unknown")
+        return
+
+    config_path = os.path.join(pkg_path, "config", "fastlio.yaml")
+    try:
+        import yaml
+        with open(config_path) as f:
+            data = yaml.safe_load(f)
+    except Exception as exc:
+        results.add("fastlio.yaml validity and extrinsic values", STATUS_FAIL,
+                     "{}: {}".format(config_path, exc))
+        return
+
+    try:
+        lid_topic = data["common"]["lid_topic"]
+        imu_topic = data["common"]["imu_topic"]
+        extrinsic_t = data["mapping"]["extrinsic_T"]
+        extrinsic_r = data["mapping"]["extrinsic_R"]
+    except (KeyError, TypeError) as exc:
+        results.add("fastlio.yaml validity and extrinsic values", STATUS_FAIL,
+                     "unexpected config structure: {}".format(exc))
+        return
+
+    problems = []
+    if lid_topic != LIDAR_TOPIC or imu_topic != IMU_TOPIC:
+        problems.append("input topics lid={} imu={} (expected lid={} imu={})".format(
+            lid_topic, imu_topic, LIDAR_TOPIC, IMU_TOPIC))
+    if list(extrinsic_t) != EXPECTED_EXTRINSIC_T:
+        problems.append("extrinsic_T={} (expected {})".format(extrinsic_t, EXPECTED_EXTRINSIC_T))
+    if list(extrinsic_r) != EXPECTED_EXTRINSIC_R:
+        problems.append("extrinsic_R={} (expected {})".format(extrinsic_r, EXPECTED_EXTRINSIC_R))
+
+    if problems:
+        results.add("fastlio.yaml validity and extrinsic values", STATUS_FAIL,
+                     "; ".join(problems))
+    else:
+        results.add("fastlio.yaml validity and extrinsic values", STATUS_PASS,
+                     "{} parsed OK, official Mid-360 extrinsic preserved".format(config_path))
+
+
+def check_fastlio_launch(results, pkg_path, timeout):
+    if pkg_path is None:
+        results.add("fastlio_mapping.launch XML and ROS package/node resolution", STATUS_FAIL,
+                     "cannot check, package path unknown")
+        return
+
+    launch_path = os.path.join(pkg_path, "launch", "fastlio_mapping.launch")
+    try:
+        import xml.etree.ElementTree as ET
+        ET.parse(launch_path)
+    except Exception as exc:
+        results.add("fastlio_mapping.launch XML and ROS package/node resolution", STATUS_FAIL,
+                     "XML parse error in {}: {}".format(launch_path, exc))
+        return
+
+    code, output = run(["roslaunch", "--nodes", PACKAGE_NAME, "fastlio_mapping.launch"], timeout)
+    if code != 0:
+        last_line = output.strip().splitlines()[-1] if output.strip() else ""
+        results.add("fastlio_mapping.launch XML and ROS package/node resolution", STATUS_FAIL,
+                     "roslaunch --nodes {} fastlio_mapping.launch failed (code={}): {}".format(
+                         PACKAGE_NAME, code, last_line))
+        return
+
+    if FASTLIO_NODE_NAME not in output:
+        results.add("fastlio_mapping.launch XML and ROS package/node resolution", STATUS_FAIL,
+                     "expected node {} not found in roslaunch --nodes output".format(FASTLIO_NODE_NAME))
+        return
+
+    results.add("fastlio_mapping.launch XML and ROS package/node resolution", STATUS_PASS,
+                "XML valid, node {} resolves".format(FASTLIO_NODE_NAME))
+
+
 def check_host_subnet(results, require_hardware):
     net = ipaddress.ip_interface(EXPECTED_HOST_IFACE).network
 
@@ -233,13 +332,13 @@ def check_ros_master(results, timeout, require_hardware):
     return master
 
 
-def check_node(results, master, require_hardware):
-    name = "{} node".format(LIVOX_NODE_NAME)
+def check_node(results, master, node_name, require_hardware):
+    name = "{} node".format(node_name)
     if master is None:
         results.add(name, hardware_status(require_hardware), "ROS master unavailable")
         return
     try:
-        master.lookupNode(LIVOX_NODE_NAME)
+        master.lookupNode(node_name)
     except Exception as exc:
         results.add(name, hardware_status(require_hardware),
                      "node not registered: {}".format(exc))
@@ -289,8 +388,8 @@ def check_topic(results, master, topic, timeout, require_hardware):
 
 def main():
     parser = argparse.ArgumentParser(description="G1 SLAM automated health check")
-    parser.add_argument("--component", choices=["mid360"], default="mid360",
-                         help="component to check (Phase 1 only implements mid360)")
+    parser.add_argument("--component", choices=["mid360", "fastlio"], default="mid360",
+                         help="component to check")
     parser.add_argument("--timeout", type=float, default=5.0,
                          help="seconds to wait for network/topic responses (default: 5)")
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
@@ -302,17 +401,31 @@ def main():
 
     # Software checks: always FAIL on error, regardless of --require-hardware.
     pkg_path = check_package_files(results)
-    check_livox_driver_package(results)
-    check_config_json(results, pkg_path)
-    check_sensors_launch(results, pkg_path, args.timeout)
 
-    # Mid-360 runtime checks: WAIT by default, FAIL with --require-hardware.
-    check_host_subnet(results, args.require_hardware)
-    check_ping(results, args.timeout, args.require_hardware)
-    master = check_ros_master(results, args.timeout, args.require_hardware)
-    check_node(results, master, args.require_hardware)
-    check_topic(results, master, LIDAR_TOPIC, args.timeout, args.require_hardware)
-    check_topic(results, master, IMU_TOPIC, args.timeout, args.require_hardware)
+    if args.component == "mid360":
+        check_livox_driver_package(results)
+        check_config_json(results, pkg_path)
+        check_sensors_launch(results, pkg_path, args.timeout)
+
+        # Mid-360 runtime checks: WAIT by default, FAIL with --require-hardware.
+        check_host_subnet(results, args.require_hardware)
+        check_ping(results, args.timeout, args.require_hardware)
+        master = check_ros_master(results, args.timeout, args.require_hardware)
+        check_node(results, master, LIVOX_NODE_NAME, args.require_hardware)
+        check_topic(results, master, LIDAR_TOPIC, args.timeout, args.require_hardware)
+        check_topic(results, master, IMU_TOPIC, args.timeout, args.require_hardware)
+
+    elif args.component == "fastlio":
+        check_fastlio_package(results)
+        check_fastlio_yaml(results, pkg_path)
+        check_fastlio_launch(results, pkg_path, args.timeout)
+
+        # FAST-LIO2 runtime checks: WAIT by default, FAIL with --require-hardware.
+        master = check_ros_master(results, args.timeout, args.require_hardware)
+        check_node(results, master, FASTLIO_NODE_NAME, args.require_hardware)
+        check_topic(results, master, ODOM_TOPIC, args.timeout, args.require_hardware)
+        check_topic(results, master, CLOUD_TOPIC, args.timeout, args.require_hardware)
+        check_topic(results, master, PATH_TOPIC, args.timeout, args.require_hardware)
 
     overall = results.overall()
     if args.json:
