@@ -13,4 +13,5 @@
   <depend>roslaunch</depend>
   <depend>sensor_msgs</depend>
   <depend>livox_ros_driver2</depend>
+  <exec_depend>fast_lio</exec_depend>
 </package>
