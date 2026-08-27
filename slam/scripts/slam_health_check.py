@@ -30,6 +30,8 @@ PATH_TOPIC = "/path"
 EXPECTED_EXTRINSIC_T = [-0.011, -0.02329, 0.04412]
 EXPECTED_EXTRINSIC_R = [1, 0, 0, 0, 1, 0, 0, 0, 1]
 
+MAP_SOURCE_PCD_REL = os.path.join("PCD", "scans.pcd")  # relative to the fast_lio package
+
 REQUIRED_FILES = [
     "package.xml",
     "CMakeLists.txt",
@@ -38,6 +40,7 @@ REQUIRED_FILES = [
     "launch/sensors.launch",
     "launch/fastlio_mapping.launch",
     "scripts/slam_health_check.py",
+    "scripts/save_map.py",
 ]
 
 _node_initialized = False
@@ -270,6 +273,54 @@ def check_fastlio_launch(results, pkg_path, timeout):
                 "XML valid, node {} resolves".format(FASTLIO_NODE_NAME))
 
 
+def check_maps_dir(results, pkg_path):
+    name = "slam/maps directory exists and is writable"
+    if pkg_path is None:
+        results.add(name, STATUS_FAIL, "cannot check, package path unknown")
+        return
+
+    maps_dir = os.path.join(pkg_path, "maps")
+    if not os.path.isdir(maps_dir):
+        results.add(name, STATUS_FAIL, "missing directory: {}".format(maps_dir))
+        return
+    if not os.access(maps_dir, os.W_OK):
+        results.add(name, STATUS_FAIL, "not writable: {}".format(maps_dir))
+        return
+    results.add(name, STATUS_PASS, "{} exists and is writable".format(maps_dir))
+
+
+def check_save_map_script(results, pkg_path, timeout):
+    name = "save_map.py script sanity (--help)"
+    if pkg_path is None:
+        results.add(name, STATUS_FAIL, "cannot check, package path unknown")
+        return
+
+    script_path = os.path.join(pkg_path, "scripts", "save_map.py")
+    code, output = run([sys.executable, script_path, "--help"], timeout)
+    if code != 0:
+        last_line = output.strip().splitlines()[-1] if output.strip() else ""
+        results.add(name, STATUS_FAIL, "save_map.py --help failed (code={}): {}".format(code, last_line))
+        return
+    results.add(name, STATUS_PASS, "save_map.py runs and parses arguments")
+
+
+def check_map_source(results, fastlio_pkg_path, require_hardware):
+    name = "accumulated FAST-LIO2 map available to save"
+    if fastlio_pkg_path is None:
+        results.add(name, hardware_status(require_hardware),
+                     "fast_lio package path unknown, cannot locate PCD output")
+        return
+
+    source_path = os.path.join(fastlio_pkg_path, MAP_SOURCE_PCD_REL)
+    if not os.path.isfile(source_path) or os.path.getsize(source_path) == 0:
+        results.add(name, hardware_status(require_hardware),
+                     "no non-empty map at {} yet (run fastlio_mapping.launch to completion "
+                     "with pcd_save_en:true, then use save_map.py --name <name>)".format(source_path))
+        return
+
+    results.add(name, STATUS_PASS, "found accumulated map at {}".format(source_path))
+
+
 def check_host_subnet(results, require_hardware):
     net = ipaddress.ip_interface(EXPECTED_HOST_IFACE).network
 
@@ -388,7 +439,7 @@ def check_topic(results, master, topic, timeout, require_hardware):
 
 def main():
     parser = argparse.ArgumentParser(description="G1 SLAM automated health check")
-    parser.add_argument("--component", choices=["mid360", "fastlio"], default="mid360",
+    parser.add_argument("--component", choices=["mid360", "fastlio", "mapsave"], default="mid360",
                          help="component to check")
     parser.add_argument("--timeout", type=float, default=5.0,
                          help="seconds to wait for network/topic responses (default: 5)")
@@ -426,6 +477,14 @@ def main():
         check_topic(results, master, ODOM_TOPIC, args.timeout, args.require_hardware)
         check_topic(results, master, CLOUD_TOPIC, args.timeout, args.require_hardware)
         check_topic(results, master, PATH_TOPIC, args.timeout, args.require_hardware)
+
+    elif args.component == "mapsave":
+        check_maps_dir(results, pkg_path)
+        check_save_map_script(results, pkg_path, args.timeout)
+        fastlio_pkg_path = check_fastlio_package(results)
+
+        # Depends on a completed mapping run: WAIT by default, FAIL with --require-hardware.
+        check_map_source(results, fastlio_pkg_path, args.require_hardware)
 
     overall = results.overall()
     if args.json:

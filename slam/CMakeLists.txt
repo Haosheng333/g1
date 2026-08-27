@@ -11,6 +11,7 @@ catkin_package()
 
 catkin_install_python(PROGRAMS
   scripts/slam_health_check.py
+  scripts/save_map.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
