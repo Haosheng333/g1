@@ -16,6 +16,9 @@
   <depend>livox_ros_driver2</depend>
   <exec_depend>fast_lio</exec_depend>
 
+  <!-- map_server.launch serves generated 2D maps on /map and /map_metadata. -->
+  <exec_depend>map_server</exec_depend>
+
   <!-- Offline pcd_to_map converter only. -->
   <depend>libpcl-all-dev</depend>
 </package>

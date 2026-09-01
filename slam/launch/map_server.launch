@@ -1,0 +1,39 @@
+<launch>
+  <!-- ROS1 map_server integration for g1_slam.
+
+       Serves a previously generated 2D navigation map (produced by
+       scripts/pcd_to_map or a saved map_saver output under slam/maps/) on the
+       latched topics /map (nav_msgs/OccupancyGrid) and /map_metadata
+       (nav_msgs/MapMetaData), plus the /static_map service.
+
+       This launch does NOT start FAST-LIO2 or the Livox driver - it only
+       replays an existing map. Bring the SLAM stack up separately with
+       slam_bringup.launch if you need live mapping.
+
+       Frame: the map is published in `camera_init` by default. pcd_to_map
+       takes its pixel coordinates straight from the FAST-LIO2 PCD, whose
+       points live in FAST-LIO2's odometry-origin frame `camera_init`, so the
+       served OccupancyGrid must be stamped with that same frame to line up
+       with live FAST-LIO2 output. Override with frame_id:=<frame> if the map
+       has been transformed into another frame.
+
+       Required argument:
+         map:=<path to a .yaml under slam/maps/>
+
+       Optional argument:
+         frame_id:=<tf frame>              (default: camera_init)
+
+       Example:
+         roslaunch g1_slam map_server.launch \
+           map:=$(rospack find g1_slam)/maps/lab_room.yaml
+  -->
+
+  <!-- No default => roslaunch errors out if the caller omits it. -->
+  <arg name="map"/>
+  <arg name="frame_id" default="camera_init"/>
+
+  <node pkg="map_server" type="map_server" name="map_server"
+        args="$(arg map)" output="screen">
+    <param name="frame_id" value="$(arg frame_id)"/>
+  </node>
+</launch>

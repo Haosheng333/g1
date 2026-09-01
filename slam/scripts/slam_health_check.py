@@ -66,11 +66,22 @@ REQUIRED_FILES = [
     "scripts/save_map.py",
     "scripts/g1_static_tf.py",
     "src/pcd_to_map.cpp",
+    "launch/map_server.launch",
 ]
 
 # Offline PCD -> 2D map converter (component "pcdmap").
 PCD_TO_MAP_BIN = "pcd_to_map"
 MAPS_GITIGNORE_PATTERNS = ("*.pcd", "*.pgm", "*.yaml")
+
+# ROS1 map_server integration (component "mapserver").
+MAP_SERVER_LAUNCH = "map_server.launch"
+MAP_SERVER_NODE = "/map_server"
+MAP_TOPIC = "/map"
+MAP_METADATA_TOPIC = "/map_metadata"
+# The served OccupancyGrid's default frame. pcd_to_map takes its pixel
+# coordinates straight from the FAST-LIO2 PCD, whose points are in FAST-LIO2's
+# camera_init (odometry origin) frame, so the map must be published there.
+DEFAULT_MAP_FRAME = FASTLIO_MAP_FRAME
 
 _node_initialized = False
 
@@ -533,6 +544,120 @@ def check_pcd_to_map_conversion(results, timeout):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def check_map_server_package(results):
+    name = "map_server package resolution"
+    try:
+        import rospkg
+        path = rospkg.RosPack().get_path("map_server")
+    except Exception as exc:
+        results.add(name, STATUS_FAIL,
+                     "package not resolvable (install ros-noetic-map-server): {}".format(exc))
+        return
+    results.add(name, STATUS_PASS, "resolved at {}".format(path))
+
+
+def check_map_server_launch(results, pkg_path, timeout):
+    name = "map_server.launch XML, required 'map' arg, node resolution"
+    if pkg_path is None:
+        results.add(name, STATUS_FAIL, "cannot check, package path unknown")
+        return
+
+    launch_path = os.path.join(pkg_path, "launch", MAP_SERVER_LAUNCH)
+    try:
+        import xml.etree.ElementTree as ET
+        root = ET.parse(launch_path).getroot()
+    except Exception as exc:
+        results.add(name, STATUS_FAIL, "XML parse error in {}: {}".format(launch_path, exc))
+        return
+
+    problems = []
+    launch_args = {a.get("name"): a for a in root.findall("arg")}
+    if "map" not in launch_args:
+        problems.append("no <arg name='map'>")
+    elif launch_args["map"].get("default") is not None or launch_args["map"].get("value") is not None:
+        problems.append("<arg name='map'> has a default/value (must be caller-required)")
+    if "frame_id" not in launch_args or launch_args["frame_id"].get("default") != DEFAULT_MAP_FRAME:
+        problems.append("<arg name='frame_id'> default is not {!r}".format(DEFAULT_MAP_FRAME))
+
+    nodes = root.findall("node")
+    ms_nodes = [n for n in nodes if n.get("pkg") == "map_server" and n.get("type") == "map_server"]
+    if not ms_nodes:
+        problems.append("no <node pkg='map_server' type='map_server'>")
+    elif "$(arg map)" not in (ms_nodes[0].get("args") or ""):
+        problems.append("map_server node does not pass $(arg map) as args")
+    if list(root.iter("include")):
+        problems.append("has <include> - must not pull in FAST-LIO2 / the Livox driver")
+
+    if problems:
+        results.add(name, STATUS_FAIL, "; ".join(problems))
+        return
+
+    code_missing, _ = run(["roslaunch", "--nodes", PACKAGE_NAME, MAP_SERVER_LAUNCH], timeout)
+    if code_missing == 0:
+        results.add(name, STATUS_FAIL, "roslaunch accepted a missing 'map' arg")
+        return
+
+    code, output = run(["roslaunch", "--nodes", PACKAGE_NAME, MAP_SERVER_LAUNCH,
+                        "map:=/tmp/g1_healthcheck_map.yaml"], timeout)
+    if code != 0:
+        last_line = output.strip().splitlines()[-1] if output.strip() else ""
+        results.add(name, STATUS_FAIL,
+                     "roslaunch --nodes ... map:=<path> failed (code={}): {}".format(code, last_line))
+        return
+
+    resolved = output.split()
+    if MAP_SERVER_NODE not in resolved:
+        results.add(name, STATUS_FAIL,
+                     "{} not in roslaunch --nodes output".format(MAP_SERVER_NODE))
+        return
+    stray = [n for n in (FASTLIO_NODE_NAME, LIVOX_NODE_NAME) if n in resolved]
+    if stray:
+        results.add(name, STATUS_FAIL, "launch also starts {}".format(", ".join(stray)))
+        return
+
+    results.add(name, STATUS_PASS,
+                 "XML valid, 'map' required, resolves only {} (no FAST-LIO2 / Livox)".format(
+                     MAP_SERVER_NODE))
+
+
+def check_map_server_frame_param(results, pkg_path, timeout):
+    name = "map_server serves the map in {} by default (overridable)".format(DEFAULT_MAP_FRAME)
+    if pkg_path is None:
+        results.add(name, STATUS_FAIL, "cannot check, package path unknown")
+        return
+
+    def dump(extra_args):
+        code, output = run(["roslaunch", "--dump-params", PACKAGE_NAME, MAP_SERVER_LAUNCH,
+                            "map:=/tmp/g1_healthcheck_map.yaml"] + extra_args, timeout)
+        if code != 0:
+            return None
+        try:
+            import yaml
+            return yaml.safe_load(output) or {}
+        except Exception:
+            return None
+
+    default_params = dump([])
+    if default_params is None:
+        results.add(name, STATUS_FAIL, "roslaunch --dump-params failed")
+        return
+    frame = default_params.get("/map_server/frame_id")
+    if frame != DEFAULT_MAP_FRAME:
+        results.add(name, STATUS_FAIL,
+                     "/map_server/frame_id defaulted to {!r} (expected {!r})".format(
+                         frame, DEFAULT_MAP_FRAME))
+        return
+
+    override_params = dump(["frame_id:=map"])
+    if override_params is None or override_params.get("/map_server/frame_id") != "map":
+        results.add(name, STATUS_FAIL, "frame_id:=<frame> override not honoured")
+        return
+
+    results.add(name, STATUS_PASS,
+                 "/map_server/frame_id defaults to {} and follows frame_id:=<frame>".format(
+                     DEFAULT_MAP_FRAME))
+
+
 def check_g1_tf_config(results, pkg_path, require_hardware):
     name = "g1_tf.yaml validity and transform state"
     if pkg_path is None:
@@ -891,7 +1016,7 @@ def check_topic(results, master, topic, timeout, require_hardware):
 def main():
     parser = argparse.ArgumentParser(description="G1 SLAM automated health check")
     parser.add_argument("--component",
-                         choices=["mid360", "fastlio", "tf", "mapsave", "pcdmap"],
+                         choices=["mid360", "fastlio", "tf", "mapsave", "pcdmap", "mapserver"],
                          default="mid360", help="component to check")
     parser.add_argument("--timeout", type=float, default=5.0,
                          help="seconds to wait for network/topic responses (default: 5)")
@@ -955,6 +1080,12 @@ def main():
         check_pcd_to_map_build(results, args.timeout)
         check_pcd_to_map_cli_errors(results, args.timeout)
         check_pcd_to_map_conversion(results, args.timeout)
+
+    elif args.component == "mapserver":
+        # Entirely offline: package + launch XML + roslaunch resolution, no master.
+        check_map_server_package(results)
+        check_map_server_launch(results, pkg_path, args.timeout)
+        check_map_server_frame_param(results, pkg_path, args.timeout)
 
     overall = results.overall()
     if args.json:
