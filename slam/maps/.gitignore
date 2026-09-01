@@ -1,1 +1,5 @@
+# Generated maps - never version-controlled. Keep the directory (.gitkeep) and
+# this file, ignore everything pcd_to_map / save_map / map_saver produce.
 *.pcd
+*.pgm
+*.yaml

@@ -65,7 +65,12 @@ REQUIRED_FILES = [
     "scripts/slam_health_check.py",
     "scripts/save_map.py",
     "scripts/g1_static_tf.py",
+    "src/pcd_to_map.cpp",
 ]
+
+# Offline PCD -> 2D map converter (component "pcdmap").
+PCD_TO_MAP_BIN = "pcd_to_map"
+MAPS_GITIGNORE_PATTERNS = ("*.pcd", "*.pgm", "*.yaml")
 
 _node_initialized = False
 
@@ -343,6 +348,189 @@ def check_map_source(results, fastlio_pkg_path, require_hardware):
         return
 
     results.add(name, STATUS_PASS, "found accumulated map at {}".format(source_path))
+
+
+def _write_pcd(path, points, binary):
+    """Write a minimal x/y/z PCD (ASCII or uncompressed binary) for self-tests."""
+    import struct
+    n = len(points)
+    header = (
+        "# .PCD v0.7 - Point Cloud Data file format\n"
+        "VERSION 0.7\nFIELDS x y z\nSIZE 4 4 4\nTYPE F F F\nCOUNT 1 1 1\n"
+        "WIDTH {n}\nHEIGHT 1\nVIEWPOINT 0 0 0 1 0 0 0\nPOINTS {n}\nDATA {d}\n"
+        .format(n=n, d="binary" if binary else "ascii"))
+    with open(path, "wb") as f:
+        f.write(header.encode("ascii"))
+        if binary:
+            for x, y, z in points:
+                f.write(struct.pack("<fff", x, y, z))
+        else:
+            for x, y, z in points:
+                f.write("{:.6f} {:.6f} {:.6f}\n".format(x, y, z).encode("ascii"))
+
+
+def _synthetic_cloud():
+    """A 2x2 m room: ground plane at z=-0.8, walls at x in {0,2} at z=0.5."""
+    pts = []
+    y = 0.0
+    while y <= 2.0 + 1e-9:
+        x = 0.0
+        while x <= 2.0 + 1e-9:
+            pts.append((x, y, -0.8))          # floor -> free evidence
+            x += 0.2
+        pts.append((0.0, y, 0.5))             # wall -> occupied
+        pts.append((2.0, y, 0.5))
+        y += 0.1
+    return pts
+
+
+def check_maps_gitignore(results, pkg_path):
+    name = "slam/maps/.gitignore ignores generated pcd/pgm/yaml"
+    if pkg_path is None:
+        results.add(name, STATUS_FAIL, "cannot check, package path unknown")
+        return
+    gi_path = os.path.join(pkg_path, "maps", ".gitignore")
+    try:
+        with open(gi_path) as f:
+            lines = {ln.strip() for ln in f}
+    except OSError as exc:
+        results.add(name, STATUS_FAIL, "cannot read {}: {}".format(gi_path, exc))
+        return
+    missing = [p for p in MAPS_GITIGNORE_PATTERNS if p not in lines]
+    if missing:
+        results.add(name, STATUS_FAIL,
+                     "missing pattern(s) {} in {}".format(missing, gi_path))
+        return
+    results.add(name, STATUS_PASS, "ignores {}".format(", ".join(MAPS_GITIGNORE_PATTERNS)))
+
+
+def check_pcd_to_map_build(results, timeout):
+    name = "pcd_to_map executable built and runnable"
+    code, output = run(["rosrun", "g1_slam", PCD_TO_MAP_BIN, "--help"], max(timeout, 20))
+    if code != 0:
+        last_line = output.strip().splitlines()[-1] if output.strip() else ""
+        results.add(name, STATUS_FAIL,
+                     "`rosrun g1_slam pcd_to_map --help` failed (code={}): {} "
+                     "(build the workspace with catkin_make)".format(code, last_line))
+        return
+    if "Usage:" not in output or "--resolution" not in output:
+        results.add(name, STATUS_FAIL, "help text missing expected content")
+        return
+    results.add(name, STATUS_PASS, "runs and prints usage")
+
+
+def check_pcd_to_map_cli_errors(results, timeout):
+    name = "pcd_to_map rejects bad names/paths/params safely"
+    import shutil
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix="g1_pcdmap_err_")
+    try:
+        good_pcd = os.path.join(tmp, "ok.pcd")
+        _write_pcd(good_pcd, _synthetic_cloud(), binary=False)
+        cases = [
+            (["--name", "x", "--output-dir", tmp], "missing --input"),
+            (["--input", os.path.join(tmp, "nope.pcd"), "--name", "x", "--output-dir", tmp],
+             "nonexistent input"),
+            (["--input", good_pcd, "--name", "../evil", "--output-dir", tmp],
+             "path-traversal --name"),
+            (["--input", good_pcd, "--name", "a/b", "--output-dir", tmp],
+             "--name with slash"),
+            (["--input", good_pcd, "--name", ".hidden", "--output-dir", tmp],
+             "--name leading dot"),
+            (["--input", good_pcd, "--name", "x", "--output-dir", os.path.join(tmp, "missing")],
+             "nonexistent --output-dir"),
+            (["--input", good_pcd, "--name", "x", "--output-dir", tmp, "--resolution", "0"],
+             "zero --resolution"),
+            (["--input", good_pcd, "--name", "x", "--output-dir", tmp,
+              "--z-min", "3", "--z-max", "1"], "inverted z range"),
+            (["--input", good_pcd, "--name", "x", "--output-dir", tmp, "--negate", "2"],
+             "bad --negate"),
+        ]
+        accepted = []
+        for extra, desc in cases:
+            code, _ = run(["rosrun", "g1_slam", PCD_TO_MAP_BIN] + extra, max(timeout, 15))
+            if code == 0:
+                accepted.append(desc)
+        if accepted:
+            results.add(name, STATUS_FAIL,
+                         "exited 0 on invalid input: {}".format("; ".join(accepted)))
+            return
+        results.add(name, STATUS_PASS,
+                     "all {} malformed invocations rejected with non-zero exit".format(len(cases)))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def check_pcd_to_map_conversion(results, timeout):
+    name = "pcd_to_map converts synthetic ASCII + binary PCD to valid .pgm/.yaml"
+    import shutil
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix="g1_pcdmap_")
+    try:
+        pts = _synthetic_cloud()
+        variants = [("ascii", os.path.join(tmp, "cloud_ascii.pcd"), False),
+                    ("binary", os.path.join(tmp, "cloud_binary.pcd"), True)]
+        for _label, pcd_path, is_bin in variants:
+            _write_pcd(pcd_path, pts, binary=is_bin)
+
+        for label, pcd_path, _is_bin in variants:
+            out_dir = os.path.join(tmp, label)
+            os.mkdir(out_dir)
+            cmd = ["rosrun", "g1_slam", PCD_TO_MAP_BIN,
+                   "--input", pcd_path, "--name", "unit", "--output-dir", out_dir,
+                   "--resolution", "0.1", "--z-min", "0.0", "--z-max", "1.0"]
+            code, output = run(cmd, max(timeout, 20))
+            if code != 0:
+                last_line = output.strip().splitlines()[-1] if output.strip() else ""
+                results.add(name, STATUS_FAIL,
+                             "{} PCD conversion failed (code={}): {}".format(label, code, last_line))
+                return
+
+            pgm = os.path.join(out_dir, "unit.pgm")
+            ymap = os.path.join(out_dir, "unit.yaml")
+            if not (os.path.isfile(pgm) and os.path.isfile(ymap)):
+                results.add(name, STATUS_FAIL, "{}: expected outputs not created".format(label))
+                return
+            with open(pgm, "rb") as f:
+                if f.read(2) != b"P5":
+                    results.add(name, STATUS_FAIL,
+                                 "{}: {} is not a binary (P5) PGM".format(label, pgm))
+                    return
+            try:
+                import yaml
+                with open(ymap) as f:
+                    meta = yaml.safe_load(f)
+            except Exception as exc:
+                results.add(name, STATUS_FAIL, "{}: yaml unreadable: {}".format(label, exc))
+                return
+            for key in ("image", "resolution", "origin", "negate",
+                        "occupied_thresh", "free_thresh"):
+                if key not in meta:
+                    results.add(name, STATUS_FAIL, "{}: yaml missing '{}'".format(label, key))
+                    return
+            if meta["image"] != "unit.pgm":
+                results.add(name, STATUS_FAIL, "{}: yaml image={!r}".format(label, meta["image"]))
+                return
+            if abs(float(meta["resolution"]) - 0.1) > 1e-9:
+                results.add(name, STATUS_FAIL,
+                             "{}: yaml resolution {} != 0.1".format(label, meta["resolution"]))
+                return
+            if not isinstance(meta["origin"], list) or len(meta["origin"]) != 3:
+                results.add(name, STATUS_FAIL, "{}: yaml origin malformed".format(label))
+                return
+
+            # A second identical run must refuse to overwrite.
+            code2, _ = run(cmd, max(timeout, 20))
+            if code2 == 0:
+                results.add(name, STATUS_FAIL,
+                             "{}: re-run overwrote an existing map".format(label))
+                return
+
+        results.add(name, STATUS_PASS,
+                     "ASCII and binary PCD both produce a P5 .pgm + valid .yaml; "
+                     "re-run refuses to overwrite")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def check_g1_tf_config(results, pkg_path, require_hardware):
@@ -702,7 +890,8 @@ def check_topic(results, master, topic, timeout, require_hardware):
 
 def main():
     parser = argparse.ArgumentParser(description="G1 SLAM automated health check")
-    parser.add_argument("--component", choices=["mid360", "fastlio", "tf", "mapsave"],
+    parser.add_argument("--component",
+                         choices=["mid360", "fastlio", "tf", "mapsave", "pcdmap"],
                          default="mid360", help="component to check")
     parser.add_argument("--timeout", type=float, default=5.0,
                          help="seconds to wait for network/topic responses (default: 5)")
@@ -758,6 +947,14 @@ def main():
 
         # Depends on a completed mapping run: WAIT by default, FAIL with --require-hardware.
         check_map_source(results, fastlio_pkg_path, args.require_hardware)
+
+    elif args.component == "pcdmap":
+        # Entirely offline: build + CLI + synthetic round-trip, no ROS master needed.
+        check_maps_dir(results, pkg_path)
+        check_maps_gitignore(results, pkg_path)
+        check_pcd_to_map_build(results, args.timeout)
+        check_pcd_to_map_cli_errors(results, args.timeout)
+        check_pcd_to_map_conversion(results, args.timeout)
 
     overall = results.overall()
     if args.json:

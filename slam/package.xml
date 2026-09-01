@@ -9,9 +9,13 @@
 
   <buildtool_depend>catkin</buildtool_depend>
 
+  <depend>roslib</depend>
   <depend>rospy</depend>
   <depend>roslaunch</depend>
   <depend>sensor_msgs</depend>
   <depend>livox_ros_driver2</depend>
   <exec_depend>fast_lio</exec_depend>
+
+  <!-- Offline pcd_to_map converter only. -->
+  <depend>libpcl-all-dev</depend>
 </package>
