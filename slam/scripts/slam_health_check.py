@@ -3,6 +3,7 @@ import argparse
 import ipaddress
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -32,15 +33,38 @@ EXPECTED_EXTRINSIC_R = [1, 0, 0, 0, 1, 0, 0, 0, 1]
 
 MAP_SOURCE_PCD_REL = os.path.join("PCD", "scans.pcd")  # relative to the fast_lio package
 
+# G1 TF framework (component "tf").
+TF_NODE_NAME = "/g1_static_tf"
+TF_CONFIG_REL = os.path.join("config", "g1_tf.yaml")
+ROBOT_BASE_FRAME = "base_link"          # G1 base frame used across this repo
+FASTLIO_MAP_FRAME = "camera_init"       # FAST-LIO2 odometry origin
+FASTLIO_BODY_FRAME = "body"             # FAST-LIO2 tracked (Mid-360 IMU) frame
+
+# (parent, child) TF edges FAST-LIO2's laserMapping node broadcasts itself.
+# Verified against src/laserMapping.cpp by check_fastlio_frame_contract().
+FASTLIO_TF_EDGES = [(FASTLIO_MAP_FRAME, FASTLIO_BODY_FRAME)]
+
+# The static TF attaches the robot base UNDER FAST-LIO's tree:
+#   camera_init --(FAST-LIO, dynamic)--> body --(g1_static_tf, static)--> base_link
+# The parent MUST be exactly `body`. camera_init is the fixed world/map frame
+# and is not an allowed static-TF parent: base_link is rigid to the sensor
+# (body), not to the world.
+EXPECTED_TF_PARENT = FASTLIO_BODY_FRAME
+EXPECTED_TF_CHILD = ROBOT_BASE_FRAME
+
 REQUIRED_FILES = [
     "package.xml",
     "CMakeLists.txt",
     "config/mid360_config.json",
     "config/fastlio.yaml",
+    "config/g1_tf.yaml",
     "launch/sensors.launch",
     "launch/fastlio_mapping.launch",
+    "launch/slam_bringup.launch",
+    "launch/g1_tf.launch",
     "scripts/slam_health_check.py",
     "scripts/save_map.py",
+    "scripts/g1_static_tf.py",
 ]
 
 _node_initialized = False
@@ -321,6 +345,245 @@ def check_map_source(results, fastlio_pkg_path, require_hardware):
     results.add(name, STATUS_PASS, "found accumulated map at {}".format(source_path))
 
 
+def check_g1_tf_config(results, pkg_path, require_hardware):
+    name = "g1_tf.yaml validity and transform state"
+    if pkg_path is None:
+        results.add(name, STATUS_FAIL, "cannot check, package path unknown")
+        return
+
+    cfg_path = os.path.join(pkg_path, TF_CONFIG_REL)
+    try:
+        import yaml
+        with open(cfg_path) as f:
+            cfg = yaml.safe_load(f)
+    except Exception as exc:
+        results.add(name, STATUS_FAIL, "{}: {}".format(cfg_path, exc))
+        return
+
+    try:
+        enabled = cfg["enabled"]
+        parent = cfg["parent_frame"]
+        child = cfg["child_frame"]
+        tvals = [float(cfg["translation"][k]) for k in ("x", "y", "z")]
+        rvals = [float(cfg["rotation_rpy"][k]) for k in ("roll", "pitch", "yaw")]
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        results.add(name, STATUS_FAIL,
+                     "unexpected/invalid structure in {}: {}".format(cfg_path, exc))
+        return
+
+    problems = []
+    if not isinstance(enabled, bool):
+        problems.append("'enabled' is not a bool: {!r}".format(enabled))
+    if parent != EXPECTED_TF_PARENT:
+        problems.append("parent_frame={!r} (must be {!r}; camera_init is the fixed "
+                        "world frame and is not an allowed static-TF parent)".format(
+                            parent, EXPECTED_TF_PARENT))
+    if child != EXPECTED_TF_CHILD:
+        problems.append("child_frame={!r} (must be {!r})".format(child, EXPECTED_TF_CHILD))
+    if problems:
+        results.add(name, STATUS_FAIL, "; ".join(problems))
+        return
+
+    placeholder = all(v == 0.0 for v in tvals + rvals)
+    if enabled and placeholder:
+        results.add(name, STATUS_FAIL,
+                     "static TF enabled but translation+rotation are all-zero "
+                     "placeholders; identity is not a measured transform")
+        return
+    if placeholder:
+        results.add(name, hardware_status(require_hardware),
+                     "static transform {} -> {} not yet measured (all zeros) and "
+                     "disabled; expected shipped state - measure base_link in the "
+                     "Mid-360 IMU frame, fill {}, then set enabled: true".format(
+                         parent, child, cfg_path))
+        return
+
+    results.add(name, STATUS_PASS,
+                 "{} -> {} xyz={} rpy={} enabled={}".format(parent, child, tvals, rvals, enabled))
+
+
+def check_g1_static_tf_script(results, pkg_path, timeout):
+    name = "g1_static_tf.py offline --check"
+    if pkg_path is None:
+        results.add(name, STATUS_FAIL, "cannot check, package path unknown")
+        return
+
+    script_path = os.path.join(pkg_path, "scripts", "g1_static_tf.py")
+    cfg_path = os.path.join(pkg_path, TF_CONFIG_REL)
+    code, output = run([sys.executable, script_path, "--check", "--config", cfg_path], timeout)
+    last_line = output.strip().splitlines()[-1] if output.strip() else ""
+
+    if code == 0:
+        results.add(name, STATUS_PASS, last_line or "configuration valid")
+    elif code == 2:
+        results.add(name, STATUS_WAIT, last_line or "mounting transform pending measurement")
+    else:
+        results.add(name, STATUS_FAIL,
+                     "g1_static_tf.py --check failed (code={}): {}".format(code, last_line))
+
+
+def check_g1_tf_launch(results, pkg_path, timeout):
+    name = "g1_tf.launch XML and ROS package/node resolution"
+    if pkg_path is None:
+        results.add(name, STATUS_FAIL, "cannot check, package path unknown")
+        return
+
+    launch_path = os.path.join(pkg_path, "launch", "g1_tf.launch")
+    try:
+        import xml.etree.ElementTree as ET
+        ET.parse(launch_path)
+    except Exception as exc:
+        results.add(name, STATUS_FAIL, "XML parse error in {}: {}".format(launch_path, exc))
+        return
+
+    code, output = run(["roslaunch", "--nodes", PACKAGE_NAME, "g1_tf.launch"], timeout)
+    if code != 0:
+        last_line = output.strip().splitlines()[-1] if output.strip() else ""
+        results.add(name, STATUS_FAIL,
+                     "roslaunch --nodes {} g1_tf.launch failed (code={}): {}".format(
+                         PACKAGE_NAME, code, last_line))
+        return
+    if TF_NODE_NAME not in output:
+        results.add(name, STATUS_FAIL,
+                     "expected node {} not found in roslaunch --nodes output".format(TF_NODE_NAME))
+        return
+
+    results.add(name, STATUS_PASS, "XML valid, node {} resolves".format(TF_NODE_NAME))
+
+
+def check_slam_bringup_wiring(results, pkg_path, timeout):
+    name = "slam_bringup.launch composes driver + FAST-LIO2 + static TF"
+    if pkg_path is None:
+        results.add(name, STATUS_FAIL, "cannot check, package path unknown")
+        return
+
+    launch_path = os.path.join(pkg_path, "launch", "slam_bringup.launch")
+    try:
+        import xml.etree.ElementTree as ET
+        ET.parse(launch_path)
+    except Exception as exc:
+        results.add(name, STATUS_FAIL, "XML parse error in {}: {}".format(launch_path, exc))
+        return
+
+    code, output = run(["roslaunch", "--nodes", PACKAGE_NAME, "slam_bringup.launch"], timeout)
+    if code != 0:
+        last_line = output.strip().splitlines()[-1] if output.strip() else ""
+        results.add(name, STATUS_FAIL,
+                     "roslaunch --nodes {} slam_bringup.launch failed (code={}): {}".format(
+                         PACKAGE_NAME, code, last_line))
+        return
+
+    missing = [n for n in (LIVOX_NODE_NAME, FASTLIO_NODE_NAME, TF_NODE_NAME) if n not in output]
+    if missing:
+        results.add(name, STATUS_FAIL,
+                     "slam_bringup.launch does not resolve node(s): {}".format(", ".join(missing)))
+        return
+
+    results.add(name, STATUS_PASS,
+                 "resolves {}, {}, {}".format(LIVOX_NODE_NAME, FASTLIO_NODE_NAME, TF_NODE_NAME))
+
+
+def _parse_fastlio_tf_edges(text):
+    """(parent, child) pairs broadcast from FAST-LIO2's laserMapping.cpp.
+
+    Matches tf::StampedTransform(<transform>, <stamp>, "<parent>", "<child>")
+    which is the (frame_id, child_frame_id) argument order.
+    """
+    pattern = re.compile(
+        r'StampedTransform\s*\([^,]+,[^,]+,\s*"([A-Za-z0-9_/]+)"\s*,\s*"([A-Za-z0-9_/]+)"\s*\)')
+    return [(m.group(1), m.group(2)) for m in pattern.finditer(text)]
+
+
+def check_fastlio_frame_contract(results, fastlio_pkg_path):
+    name = "FAST-LIO2 TF broadcaster matches the TF framework's assumptions"
+    if fastlio_pkg_path is None:
+        results.add(name, STATUS_FAIL, "fast_lio package path unknown")
+        return
+
+    src_path = os.path.join(fastlio_pkg_path, "src", "laserMapping.cpp")
+    try:
+        with open(src_path) as f:
+            text = f.read()
+    except Exception as exc:
+        results.add(name, STATUS_WAIT, "cannot read {}: {}".format(src_path, exc))
+        return
+
+    edges = _parse_fastlio_tf_edges(text)
+    if not edges:
+        results.add(name, STATUS_FAIL,
+                     "no tf::StampedTransform broadcast found in {}; cannot confirm "
+                     "FAST-LIO2 still publishes {} -> {}".format(
+                         src_path, FASTLIO_MAP_FRAME, FASTLIO_BODY_FRAME))
+        return
+
+    if sorted(edges) != sorted(FASTLIO_TF_EDGES):
+        results.add(name, STATUS_FAIL,
+                     "FAST-LIO2 now broadcasts {} (expected exactly {}); the static TF "
+                     "wiring in g1_tf.yaml may create a parent conflict or a gap".format(
+                         edges, FASTLIO_TF_EDGES))
+        return
+
+    results.add(name, STATUS_PASS,
+                 "FAST-LIO2 broadcasts {} -> {} (dynamic); static TF hangs {} under {}".format(
+                     FASTLIO_MAP_FRAME, FASTLIO_BODY_FRAME, EXPECTED_TF_CHILD, EXPECTED_TF_PARENT))
+
+
+def check_static_tf_single_parent(results, pkg_path, fastlio_pkg_path):
+    """Guard: the whole TF tree must keep exactly one parent per frame."""
+    name = "TF tree has a single parent per frame (no camera_init/body re-parenting)"
+    if pkg_path is None:
+        results.add(name, STATUS_FAIL, "cannot check, package path unknown")
+        return
+
+    # FAST-LIO's edges: from source if readable, else the expected constant.
+    fastlio_edges = list(FASTLIO_TF_EDGES)
+    if fastlio_pkg_path is not None:
+        src_path = os.path.join(fastlio_pkg_path, "src", "laserMapping.cpp")
+        try:
+            with open(src_path) as f:
+                parsed = _parse_fastlio_tf_edges(f.read())
+            if parsed:
+                fastlio_edges = parsed
+        except OSError:
+            pass
+
+    cfg_path = os.path.join(pkg_path, TF_CONFIG_REL)
+    try:
+        import yaml
+        with open(cfg_path) as f:
+            cfg = yaml.safe_load(f)
+        parent = cfg["parent_frame"]
+        child = cfg["child_frame"]
+    except Exception as exc:
+        results.add(name, STATUS_FAIL, "cannot read frames from {}: {}".format(cfg_path, exc))
+        return
+
+    # Build the child -> parent map for every static + dynamic edge and flag
+    # any child that is claimed twice.
+    all_edges = list(fastlio_edges) + [(parent, child)]
+    parents_of = {}
+    conflicts = []
+    for p, c in all_edges:
+        if c in parents_of and parents_of[c] != p:
+            conflicts.append("{} is parented by both {} and {}".format(c, parents_of[c], p))
+        parents_of[c] = p
+        if p == c:
+            conflicts.append("{} is its own parent".format(c))
+
+    owned = {c for _p, c in fastlio_edges}
+    if child in owned:
+        conflicts.append("static TF child {!r} is already broadcast by FAST-LIO2 "
+                         "(it would get a second parent)".format(child))
+
+    if conflicts:
+        results.add(name, STATUS_FAIL, "; ".join(sorted(set(conflicts))))
+        return
+
+    edge_strs = ["{} -> {}".format(p, c) for p, c in all_edges]
+    results.add(name, STATUS_PASS,
+                 "single parent per frame; edges: {}".format(", ".join(edge_strs)))
+
+
 def check_host_subnet(results, require_hardware):
     net = ipaddress.ip_interface(EXPECTED_HOST_IFACE).network
 
@@ -439,8 +702,8 @@ def check_topic(results, master, topic, timeout, require_hardware):
 
 def main():
     parser = argparse.ArgumentParser(description="G1 SLAM automated health check")
-    parser.add_argument("--component", choices=["mid360", "fastlio", "mapsave"], default="mid360",
-                         help="component to check")
+    parser.add_argument("--component", choices=["mid360", "fastlio", "tf", "mapsave"],
+                         default="mid360", help="component to check")
     parser.add_argument("--timeout", type=float, default=5.0,
                          help="seconds to wait for network/topic responses (default: 5)")
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
@@ -477,6 +740,16 @@ def main():
         check_topic(results, master, ODOM_TOPIC, args.timeout, args.require_hardware)
         check_topic(results, master, CLOUD_TOPIC, args.timeout, args.require_hardware)
         check_topic(results, master, PATH_TOPIC, args.timeout, args.require_hardware)
+
+    elif args.component == "tf":
+        # Entirely offline: file/XML/frame-contract checks, no ROS master needed.
+        fastlio_pkg_path = check_fastlio_package(results)
+        check_g1_tf_config(results, pkg_path, args.require_hardware)
+        check_g1_static_tf_script(results, pkg_path, args.timeout)
+        check_g1_tf_launch(results, pkg_path, args.timeout)
+        check_slam_bringup_wiring(results, pkg_path, args.timeout)
+        check_fastlio_frame_contract(results, fastlio_pkg_path)
+        check_static_tf_single_parent(results, pkg_path, fastlio_pkg_path)
 
     elif args.component == "mapsave":
         check_maps_dir(results, pkg_path)

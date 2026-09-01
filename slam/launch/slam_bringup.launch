@@ -8,18 +8,28 @@
          - fastlio_mapping.launch  -> fast_lio node /laserMapping
                                       (subscribes to the above, publishes
                                        /Odometry, /cloud_registered, /path)
+         - g1_tf.launch            -> g1_slam node /g1_static_tf
+                                      (static body -> base_link, hung under
+                                       FAST-LIO's camera_init -> body; ships
+                                       disabled until measured - see
+                                       config/g1_tf.yaml)
 
        RViz is disabled by default so this runs headless (container / robot).
        Neither included file starts RViz on its own; pass rviz:=true to bring up
        FAST-LIO2's visualization. -->
 
   <arg name="rviz" default="false"/>
+  <arg name="static_tf" default="true"/>
 
   <!-- Livox Mid-360 driver -->
   <include file="$(find g1_slam)/launch/sensors.launch"/>
 
   <!-- FAST-LIO2 mapping -->
   <include file="$(find g1_slam)/launch/fastlio_mapping.launch"/>
+
+  <!-- body -> base_link static TF framework (no transform published until
+       config/g1_tf.yaml is measured and enabled). -->
+  <include file="$(find g1_slam)/launch/g1_tf.launch" if="$(arg static_tf)"/>
 
   <!-- Optional visualization, off by default. -->
   <group if="$(arg rviz)">

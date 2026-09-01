@@ -1,0 +1,21 @@
+<launch>
+  <!-- G1 TF framework: static transform body -> base_link.
+
+       FAST-LIO2 broadcasts camera_init -> body (dynamic). To keep one parent
+       per frame this hangs the robot base UNDER body, giving:
+           camera_init -> body -> base_link
+
+       The g1_static_tf node reads config/g1_tf.yaml. That file ships with
+       `enabled: false` and all-zero placeholder values, so by default this
+       launch brings the node up but publishes NO transform - it only logs a
+       warning that the transform still needs to be measured.
+
+       To activate: measure base_link's pose in the Mid-360 IMU (body) frame,
+       fill in config/g1_tf.yaml, set `enabled: true`. Nothing here changes. -->
+
+  <arg name="config" default="$(find g1_slam)/config/g1_tf.yaml"/>
+
+  <node pkg="g1_slam" type="g1_static_tf.py" name="g1_static_tf" output="screen">
+    <rosparam command="load" file="$(arg config)"/>
+  </node>
+</launch>

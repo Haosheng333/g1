@@ -12,6 +12,7 @@ catkin_package()
 catkin_install_python(PROGRAMS
   scripts/slam_health_check.py
   scripts/save_map.py
+  scripts/g1_static_tf.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
