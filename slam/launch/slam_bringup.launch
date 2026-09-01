@@ -1,0 +1,30 @@
+<launch>
+  <!-- Top-level SLAM bring-up for the G1: starts the Livox Mid-360 driver and
+       FAST-LIO2 mapping together in a single roslaunch.
+
+       Composes g1_slam's two building-block launch files:
+         - sensors.launch          -> livox_ros_driver2 node /livox_lidar_publisher2
+                                      (publishes /livox/lidar and /livox/imu)
+         - fastlio_mapping.launch  -> fast_lio node /laserMapping
+                                      (subscribes to the above, publishes
+                                       /Odometry, /cloud_registered, /path)
+
+       RViz is disabled by default so this runs headless (container / robot).
+       Neither included file starts RViz on its own; pass rviz:=true to bring up
+       FAST-LIO2's visualization. -->
+
+  <arg name="rviz" default="false"/>
+
+  <!-- Livox Mid-360 driver -->
+  <include file="$(find g1_slam)/launch/sensors.launch"/>
+
+  <!-- FAST-LIO2 mapping -->
+  <include file="$(find g1_slam)/launch/fastlio_mapping.launch"/>
+
+  <!-- Optional visualization, off by default. -->
+  <group if="$(arg rviz)">
+    <node name="rviz" pkg="rviz" type="rviz"
+          args="-d $(find fast_lio)/rviz_cfg/loam_livox.rviz"
+          output="screen"/>
+  </group>
+</launch>
