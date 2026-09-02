@@ -1,0 +1,26 @@
+# Grip presets for the Revo2 hand. Order per finger list is always
+# [thumb, index, middle, ring, pinky], raw units 0-1000 (1000 = fully open).
+#
+# Tune this file, not any .py file, when adjusting grip behavior. Same file
+# is used by both the real Modbus backend and the MuJoCo sim backend.
+
+pre_grasp:
+  positions: [900, 900, 900, 900, 900]
+  speed: 600
+  force_limit: 200
+  settle_tolerance: 25
+  settle_timeout_s: 2.0
+
+grasp:
+  positions: [350, 250, 250, 250, 250]
+  speed: 300
+  force_limit: 450
+  settle_tolerance: 25
+  settle_timeout_s: 2.0
+
+release:
+  positions: [900, 900, 900, 900, 900]
+  speed: 600
+  force_limit: 200
+  settle_tolerance: 25
+  settle_timeout_s: 2.0
