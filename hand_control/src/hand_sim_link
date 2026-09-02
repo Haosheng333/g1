@@ -1,0 +1,104 @@
+"""
+hand_sim_link.py — MuJoCo stand-in for RevoHandLink.
+
+Same interface as revo_hand_link.RevoHandLink: connect / close / write_pose /
+read_positions / wait_until_settled. hand_node.py picks whichever backend
+based on the ~sim param; nothing else about the node changes.
+"""
+
+import asyncio
+import threading
+import time
+from typing import List, Optional
+
+import mujoco
+
+from hand_control.finger_presets import FingerPose
+
+PROXIMAL_JOINTS = [f"finger{i}_joint" for i in range(5)]
+ACTUATORS = [f"finger{i}_act" for i in range(5)]
+FLEX_MAX_RAD = 1.3   # must match the joint/actuator range in the MJCF
+
+
+class RevoHandSimLink:
+    def __init__(self, model_path: str, render: bool = False, physics_hz: Optional[float] = None):
+        self._render = render
+        self._model = mujoco.MjModel.from_xml_path(model_path)
+        self._data = mujoco.MjData(self._model)
+        self._dt = self._model.opt.timestep
+        self._physics_hz = physics_hz or (1.0 / self._dt)
+
+        self._act_ids = [
+            mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
+            for name in ACTUATORS
+        ]
+        self._joint_qpos_adr = [
+            self._model.jnt_qposadr[mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_JOINT, name)]
+            for name in PROXIMAL_JOINTS
+        ]
+
+        self._lock = threading.Lock()
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+        self._viewer = None
+
+    async def connect(self):
+        self._running = True
+        self._thread = threading.Thread(target=self._physics_loop, daemon=True)
+        self._thread.start()
+        await asyncio.sleep(0.05)
+
+    async def close(self):
+        self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        if self._viewer is not None:
+            self._viewer.close()
+
+    async def write_pose(self, pose: FingerPose):
+        with self._lock:
+            for i, aid in enumerate(self._act_ids):
+                self._data.ctrl[aid] = self._raw_to_angle(pose.positions[i])
+
+    async def read_positions(self) -> List[int]:
+        with self._lock:
+            angles = [self._data.qpos[adr] for adr in self._joint_qpos_adr]
+        return [self._angle_to_raw(a) for a in angles]
+
+    async def wait_until_settled(self, pose: FingerPose) -> bool:
+        deadline = time.monotonic() + pose.settle_timeout_s
+        while time.monotonic() < deadline:
+            fb = await self.read_positions()
+            if all(abs(fb[i] - pose.positions[i]) <= pose.settle_tolerance
+                   for i in range(len(pose.positions))):
+                return True
+            await asyncio.sleep(0.02)
+        return False
+
+    def _physics_loop(self):
+        if self._render:
+            from mujoco import viewer as mj_viewer
+            self._viewer = mj_viewer.launch_passive(self._model, self._data)
+        period = 1.0 / self._physics_hz
+        next_t = time.perf_counter()
+        while self._running:
+            with self._lock:
+                mujoco.mj_step(self._model, self._data)
+            if self._viewer is not None:
+                self._viewer.sync()
+            next_t += period
+            sleep_for = next_t - time.perf_counter()
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+            else:
+                next_t = time.perf_counter()
+
+    @staticmethod
+    def _raw_to_angle(raw: int) -> float:
+        raw = max(0, min(1000, raw))
+        return FLEX_MAX_RAD * (1.0 - raw / 1000.0)
+
+    @staticmethod
+    def _angle_to_raw(angle: float) -> int:
+        angle = max(0.0, min(FLEX_MAX_RAD, angle))
+        return int(round(1000 * (1.0 - angle / FLEX_MAX_RAD)))
