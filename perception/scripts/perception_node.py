@@ -9,6 +9,8 @@ rosrun perception perception_node.py`.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import rospy
 from cv_bridge import CvBridge
@@ -25,12 +27,19 @@ from ultralytics import YOLO
 # not necessarily this team's; re-measure once the robot is available.
 EXTRINSICS = Extrinsics()
 
+# Fine-tuned on real captured video of the actual target object (a drink can,
+# labeled "bottle" -- see CLASS_RADIUS_M's comment in m1_perception.py).
+# Falls back to the stock pretrained model if the fine-tuned weights are
+# missing, e.g. if the target object has since changed.
+MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "bottle_finetuned.pt"
+
 WAIT_TIMEOUT_S = 1.0
 
 
 class PerceptionNode:
     def __init__(self) -> None:
-        self.model = YOLO("yolov8n.pt")
+        model_path = MODEL_PATH if MODEL_PATH.exists() else "yolov8n.pt"
+        self.model = YOLO(str(model_path))
         self.bridge = CvBridge()
         self._K: CameraIntrinsics | None = None
         rospy.Subscriber("/camera/color/camera_info", CameraInfo, self._on_camera_info)

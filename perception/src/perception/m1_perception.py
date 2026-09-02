@@ -21,11 +21,14 @@ DEPTH_PATCH_RADIUS_PX = 3  # 7x7 patch
 
 # Radius (m) to push along the view ray from the visible surface to the object's
 # geometric center. A class with no surface depth (e.g. a flat button) uses 0.0.
-# Only "bottle" (~0.05 m) is the spec's own example value. "cup"/"remote" and the
-# default below are unverified placeholders -- measure the real objects and
-# replace these before trusting the output on anything but a bottle.
+# "bottle" is measured, not a placeholder: the fine-tuned detector (see
+# perception/models/bottle_finetuned.pt) was trained on real captured video of
+# a standard 330 ml drink can (~0.033 m radius), kept under the label "bottle"
+# for consistency with the spec's own running example and this module's
+# interface -- it is a can, not a bottle. "cup"/"remote" and the default
+# below are still unverified placeholders for the stock pretrained detector.
 CLASS_RADIUS_M = {
-    "bottle": 0.05,
+    "bottle": 0.033,
     "cup": 0.04,  # placeholder, not measured
     "remote": 0.01,  # placeholder, not measured
 }

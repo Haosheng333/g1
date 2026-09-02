@@ -29,6 +29,10 @@ from perception.m1_perception import (
     run_detection_pipeline,
 )
 
+# Fine-tuned on real captured video of the actual target object (a drink
+# can, labeled "bottle" -- see CLASS_RADIUS_M's comment in m1_perception.py).
+DEFAULT_MODEL = Path(__file__).resolve().parent.parent / "models" / "bottle_finetuned.pt"
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Interactive Module 1 perception demo")
@@ -43,6 +47,9 @@ def main() -> None:
     parser.add_argument("--fx", type=float, default=615.0, help="Focal length x (px); 615 ~ a typical D435i at 640x480")
     parser.add_argument("--fy", type=float, default=615.0, help="Focal length y (px)")
     parser.add_argument("--conf", type=float, default=0.40, help="YOLO confidence threshold")
+    parser.add_argument(
+        "--model", default=None, help="Weights to load (default: bottle_finetuned.pt if present, else stock yolov8n.pt)"
+    )
     parser.add_argument("--out", default=None, help="Where to save the annotated preview (default: <image>_preview.jpg)")
     args = parser.parse_args()
 
@@ -67,7 +74,13 @@ def main() -> None:
         # demo may be run on any arbitrary photo, not necessarily G1's camera
         extrinsics = Extrinsics(R_base_opt=np.eye(3), t_base_opt=np.zeros(3))
 
-    model = YOLO("yolov8n.pt")
+    if args.model:
+        model_path = args.model
+    elif DEFAULT_MODEL.exists():
+        model_path = str(DEFAULT_MODEL)
+    else:
+        model_path = "yolov8n.pt"
+    model = YOLO(model_path)
 
     if not args.label:
         detections = run_detection_pipeline(rgb, depth_mm, model, K, extrinsics, conf=args.conf)
