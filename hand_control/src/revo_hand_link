@@ -1,0 +1,92 @@
+"""
+revo_hand_link.py — the real Modbus backend for the Revo2 hand.
+
+Every Modbus register access funnels through RevoRegisterMap and this file.
+If you need to change addressing for your firmware revision, this is the
+only file you should need to touch.
+"""
+
+import asyncio
+import time
+from dataclasses import dataclass
+from typing import List
+
+from hand_control.finger_presets import FingerPose
+
+try:
+    from pymodbus.client import AsyncModbusSerialClient
+except ImportError:  # pragma: no cover
+    AsyncModbusSerialClient = None
+
+
+@dataclass(frozen=True)
+class RevoRegisterMap:
+    """Holding-register addresses for one Revo2 hand.
+
+    Placeholders below are illustrative, NOT verified — replace with the
+    numbers from your Revo2 Modbus documentation / vendor support.
+    """
+    slave_id: int = 1
+    position_cmd_base: int = 0x0400
+    speed_cmd_base: int = 0x0500
+    force_limit_cmd_base: int = 0x0600
+    position_fb_base: int = 0x0700
+    n_fingers: int = 5
+
+
+class RevoHandLink:
+    """Async Modbus link. Same interface as hand_control.hand_sim_link.RevoHandSimLink:
+    connect(), close(), write_pose(pose), read_positions(), wait_until_settled(pose).
+    """
+
+    def __init__(self, port: str, baudrate: int, regmap: RevoRegisterMap):
+        if AsyncModbusSerialClient is None:
+            raise RuntimeError("pymodbus not installed: pip install pymodbus")
+        self._regmap = regmap
+        self._client = AsyncModbusSerialClient(
+            port=port, baudrate=baudrate, parity="N", stopbits=1, bytesize=8, timeout=0.2
+        )
+        self._lock = asyncio.Lock()
+
+    async def connect(self):
+        ok = await self._client.connect()
+        if not ok:
+            raise RuntimeError("could not open Modbus link")
+
+    async def close(self):
+        self._client.close()
+
+    async def write_pose(self, pose: FingerPose):
+        rm = self._regmap
+        async with self._lock:
+            for i in range(rm.n_fingers):
+                await self._write_reg(rm.speed_cmd_base + i, pose.speed)
+                await self._write_reg(rm.force_limit_cmd_base + i, pose.force_limit)
+            for i in range(rm.n_fingers):
+                await self._write_reg(rm.position_cmd_base + i, pose.positions[i])
+
+    async def read_positions(self) -> List[int]:
+        rm = self._regmap
+        async with self._lock:
+            return [await self._read_reg(rm.position_fb_base + i) for i in range(rm.n_fingers)]
+
+    async def wait_until_settled(self, pose: FingerPose) -> bool:
+        deadline = time.monotonic() + pose.settle_timeout_s
+        while time.monotonic() < deadline:
+            fb = await self.read_positions()
+            if all(abs(fb[i] - pose.positions[i]) <= pose.settle_tolerance
+                   for i in range(len(pose.positions))):
+                return True
+            await asyncio.sleep(0.02)
+        return False
+
+    async def _write_reg(self, addr: int, value: int):
+        result = await self._client.write_register(addr, value, slave=self._regmap.slave_id)
+        if result.isError():
+            raise IOError(f"Modbus write failed at 0x{addr:04X}: {result}")
+
+    async def _read_reg(self, addr: int) -> int:
+        result = await self._client.read_holding_registers(addr, count=1, slave=self._regmap.slave_id)
+        if result.isError():
+            raise IOError(f"Modbus read failed at 0x{addr:04X}: {result}")
+        return result.registers[0]
