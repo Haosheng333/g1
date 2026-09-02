@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+"""
+Dev smoke test for the MuJoCo sim backend — no ROS required.
+Run directly: python3 scripts/test_hand_sim_link.py
+Set RENDER=1 in the environment to pop up the viewer.
+"""
+import asyncio
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+
+from hand_control.finger_presets import load_presets
+from hand_control.hand_sim_link import RevoHandSimLink
+
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "revo2_hand_sim.xml")
+
+
+async def main():
+    presets = load_presets()
+    render = os.environ.get("RENDER") == "1"
+    link = RevoHandSimLink(MODEL_PATH, render=render)
+    await link.connect()
+
+    for name, pose in presets.items():
+        await link.write_pose(pose)
+        settled = await link.wait_until_settled(pose)
+        fb = await link.read_positions()
+        print(f"{name:10s} target={pose.positions} feedback={fb} settled={settled}")
+
+    await link.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
