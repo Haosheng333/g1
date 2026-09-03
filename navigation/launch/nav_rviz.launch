@@ -1,0 +1,5 @@
+<launch>
+  <!-- Launch RViz with default ROS navigation displays -->
+  <node pkg="rviz" type="rviz" name="rviz" 
+        args="-d $(find g1_navigation)/config/nav.rviz" />
+</launch>

@@ -1,0 +1,22 @@
+<launch>
+  <!-- Arguments -->
+  <arg name="map_file" default="$(find g1_navigation)/maps/map.yaml"/>
+
+  <!-- Map Server -->
+  <node pkg="map_server" type="map_server" name="map_server" args="$(arg map_file)" />
+
+  <!-- AMCL Localization -->
+  <node pkg="amcl" type="amcl" name="amcl" output="screen">
+    <param name="use_map_topic" value="true"/>
+  </node>
+
+  <!-- Move Base Navigation -->
+  <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">
+    <param name="base_local_planner" value="dwa_local_planner/DWAPlannerROS" />
+    <rosparam file="$(find g1_navigation)/config/costmap_common_params.yaml" command="load" ns="global_costmap" />
+    <rosparam file="$(find g1_navigation)/config/costmap_common_params.yaml" command="load" ns="local_costmap" />
+    <rosparam file="$(find g1_navigation)/config/local_costmap_params.yaml" command="load" />
+    <rosparam file="$(find g1_navigation)/config/global_costmap_params.yaml" command="load" />
+    <rosparam file="$(find g1_navigation)/config/dwa_local_planner_params.yaml" command="load" />
+  </node>
+</launch>

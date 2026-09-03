@@ -1,0 +1,9 @@
+<launch>
+  <!-- Static Transform: base_link to laser_frame (G1 LiDAR location) -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="base_to_laser"
+        args="0.2 0 0.4 0 0 0 base_link laser_frame" />
+
+  <!-- Static Transform for testing without odometry: odom to base_link -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="odom_to_base"
+        args="0 0 0 0 0 0 odom base_link" />
+</launch>

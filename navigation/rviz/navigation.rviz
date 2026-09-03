@@ -1,0 +1,29 @@
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz/Grid
+      Name: Grid
+      Enabled: true
+    - Class: rviz/Map
+      Name: Map
+      Topic: /map
+      Enabled: true
+    - Class: rviz/RobotModel
+      Name: RobotModel
+      Enabled: false
+    - Class: rviz/PoseArray
+      Name: AMCL Particles
+      Topic: /particlecloud
+      Enabled: false
+    - Class: rviz/Path
+      Name: Global Plan
+      Topic: /move_base/NavfnROS/plan
+      Enabled: true
+  Tools:
+    - Class: rviz/Interact
+    - Class: rviz/MoveCamera
+    - Class: rviz/Select
+    - Class: rviz/SetInitialPose
+    - Class: rviz/SetGoal
+  Global Options:
+    Fixed Frame: map

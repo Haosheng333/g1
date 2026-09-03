@@ -1,0 +1,6 @@
+created_at: '20260902_203156'
+db_file: rtabmap.db
+frame_id: map
+map_name: g1_map_20260902_203156
+resolution: 0.05
+sensor_config: Livox Mid-360 + RealSense RGB-D
