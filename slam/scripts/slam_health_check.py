@@ -34,23 +34,52 @@ EXPECTED_EXTRINSIC_R = [1, 0, 0, 0, 1, 0, 0, 0, 1]
 MAP_SOURCE_PCD_REL = os.path.join("PCD", "scans.pcd")  # relative to the fast_lio package
 
 # G1 TF framework (component "tf").
-TF_NODE_NAME = "/g1_static_tf"
+# The tree, with exactly one parent per frame:
+#   camera_init --(FAST-LIO2 /laserMapping, dynamic)--> body
+#   camera_init --(g1_tf_publisher,          dynamic)--> pelvis
+#   pelvis      --(robot_state_publisher, waist_yaw_joint)--> torso_link
+#   torso_link  --(robot_state_publisher, fixed)--> mid360_link, head_link, ...
+TF_NODE_NAME = "/g1_tf_publisher"
+ROBOT_STATE_PUBLISHER_NODE = "/robot_state_publisher"
+ROBOT_STATE_PUBLISHER_PKG = "robot_state_publisher"
+ROBOT_STATE_PUBLISHER_APT = "ros-noetic-robot-state-publisher"
 TF_CONFIG_REL = os.path.join("config", "g1_tf.yaml")
-ROBOT_BASE_FRAME = "base_link"          # G1 base frame used across this repo
+TF_PUBLISHER_REL = os.path.join("scripts", "g1_tf_publisher.py")
+
 FASTLIO_MAP_FRAME = "camera_init"       # FAST-LIO2 odometry origin
 FASTLIO_BODY_FRAME = "body"             # FAST-LIO2 tracked (Mid-360 IMU) frame
+ROBOT_ROOT_FRAME = "pelvis"             # official URDF root; what we broadcast
+TORSO_FRAME = "torso_link"              # carries the Mid-360; child of waist_yaw_joint
+LIDAR_FRAME = "mid360_link"             # Mid-360 LiDAR frame, per the URDF
+
+# `base_link` is an UNRESOLVED integration decision pending the navigation team.
+# Nothing in this package may publish or invent it; the checks below assert that.
+UNRESOLVED_BASE_FRAME = "base_link"
 
 # (parent, child) TF edges FAST-LIO2's laserMapping node broadcasts itself.
 # Verified against src/laserMapping.cpp by check_fastlio_frame_contract().
 FASTLIO_TF_EDGES = [(FASTLIO_MAP_FRAME, FASTLIO_BODY_FRAME)]
 
-# The static TF attaches the robot base UNDER FAST-LIO's tree:
-#   camera_init --(FAST-LIO, dynamic)--> body --(g1_static_tf, static)--> base_link
-# The parent MUST be exactly `body`. camera_init is the fixed world/map frame
-# and is not an allowed static-TF parent: base_link is rigid to the sensor
-# (body), not to the world.
-EXPECTED_TF_PARENT = FASTLIO_BODY_FRAME
-EXPECTED_TF_CHILD = ROBOT_BASE_FRAME
+# What g1_tf_publisher broadcasts. Parent is FAST-LIO2's world frame (which
+# already parents `body`, so `pelvis` becomes a second CHILD of camera_init, not
+# a second parent of anything).
+EXPECTED_TF_PARENT = FASTLIO_MAP_FRAME
+EXPECTED_TF_CHILD = ROBOT_ROOT_FRAME
+
+# Vendored official robot description. Provenance and these digests are recorded
+# in urdf/SOURCE.md; both are re-verified by check_vendored_urdf().
+URDF_REL = os.path.join("urdf", "g1_23dof_mode_10.urdf")
+URDF_LICENSE_REL = os.path.join("urdf", "LICENSE")
+URDF_SOURCE_REL = os.path.join("urdf", "SOURCE.md")
+URDF_SHA256 = "9333e89c51614c92b416c2c22a28f1614284d02321548e10479cce73552bcf43"
+URDF_LICENSE_SHA256 = "84aac59fd3246e3ddc49d1387644e8fcf43b0def4f0b9fe687f372e90446df2d"
+URDF_UPSTREAM_COMMIT = "7d6075f7f58588b189b940130e3edab3c839b2df"
+URDF_UPSTREAM_URL = "https://github.com/unitreerobotics/unitree_ros.git"
+
+# External interface, owned by the robot-control / integration team. This package
+# consumes it and never synthesizes it.
+JOINT_STATES_TOPIC = "/joint_states"
+WAIST_YAW_JOINT = "waist_yaw_joint"
 
 REQUIRED_FILES = [
     "package.xml",
@@ -64,7 +93,14 @@ REQUIRED_FILES = [
     "launch/g1_tf.launch",
     "scripts/slam_health_check.py",
     "scripts/save_map.py",
-    "scripts/g1_static_tf.py",
+    "scripts/g1_tf_publisher.py",
+    "setup.py",
+    "src/g1_slam/__init__.py",
+    "src/g1_slam/tf_chain.py",
+    "test/test_tf_transforms.py",
+    "urdf/g1_23dof_mode_10.urdf",
+    "urdf/LICENSE",
+    "urdf/SOURCE.md",
     "src/pcd_to_map.cpp",
     "launch/map_server.launch",
 ]
@@ -658,8 +694,156 @@ def check_map_server_frame_param(results, pkg_path, timeout):
                      DEFAULT_MAP_FRAME))
 
 
+def _sha256(path):
+    import hashlib
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _import_tf_chain(pkg_path):
+    """Import g1_slam.tf_chain, falling back to <pkg>/src for an unbuilt tree."""
+    try:
+        from g1_slam import tf_chain
+        return tf_chain, None
+    except ImportError as exc:
+        first = exc
+    if pkg_path:
+        src_dir = os.path.join(pkg_path, "src")
+        if src_dir not in sys.path:
+            sys.path.insert(0, src_dir)
+        try:
+            from g1_slam import tf_chain
+            return tf_chain, None
+        except ImportError as exc:
+            return None, exc
+    return None, first
+
+
+def check_vendored_urdf(results, pkg_path):
+    """The vendored URDF and its upstream license must be byte-exact (SHA-256)."""
+    name = "vendored URDF + license integrity (SHA-256)"
+    if pkg_path is None:
+        results.add(name, STATUS_FAIL, "cannot check, package path unknown")
+        return
+
+    problems = []
+    for rel, expected in ((URDF_REL, URDF_SHA256), (URDF_LICENSE_REL, URDF_LICENSE_SHA256)):
+        path = os.path.join(pkg_path, rel)
+        if not os.path.isfile(path):
+            problems.append("{} is missing".format(rel))
+            continue
+        try:
+            actual = _sha256(path)
+        except OSError as exc:
+            problems.append("{} unreadable: {}".format(rel, exc))
+            continue
+        if actual != expected:
+            problems.append("{} sha256 {} != recorded {} - the vendored copy was "
+                            "modified; re-copy from upstream or update SOURCE.md".format(
+                                rel, actual[:16], expected[:16]))
+
+    if problems:
+        results.add(name, STATUS_FAIL, "; ".join(problems))
+        return
+
+    results.add(name, STATUS_PASS,
+                "{} and {} match the SHA-256 digests recorded in {}".format(
+                    URDF_REL, URDF_LICENSE_REL, URDF_SOURCE_REL))
+
+
+def check_urdf_source_md(results, pkg_path):
+    """SOURCE.md must record the upstream URL, commit and both digests."""
+    name = "urdf/SOURCE.md records upstream provenance"
+    if pkg_path is None:
+        results.add(name, STATUS_FAIL, "cannot check, package path unknown")
+        return
+
+    path = os.path.join(pkg_path, URDF_SOURCE_REL)
+    try:
+        with open(path) as handle:
+            text = handle.read()
+    except OSError as exc:
+        results.add(name, STATUS_FAIL, "cannot read {}: {}".format(path, exc))
+        return
+
+    required = {
+        "upstream URL": URDF_UPSTREAM_URL,
+        "upstream commit": URDF_UPSTREAM_COMMIT,
+        "URDF sha256": URDF_SHA256,
+        "license sha256": URDF_LICENSE_SHA256,
+    }
+    missing = sorted(label for label, value in required.items() if value not in text)
+    if missing:
+        results.add(name, STATUS_FAIL,
+                    "{} does not record: {}".format(URDF_SOURCE_REL, ", ".join(missing)))
+        return
+
+    # The vendored copy carries no meshes, so it must not claim visualization.
+    if "NOT visualization" not in text and "not claimed" not in text:
+        results.add(name, STATUS_FAIL,
+                    "{} must state that the vendored URDF is kinematics/TF only "
+                    "(the mesh references are relative and no meshes are vendored)".format(
+                        URDF_SOURCE_REL))
+        return
+
+    results.add(name, STATUS_PASS,
+                "records {} @ {} plus both SHA-256 digests, scoped kinematics/TF only".format(
+                    URDF_UPSTREAM_URL, URDF_UPSTREAM_COMMIT[:12]))
+
+
+def check_tf_chain_module(results, pkg_path):
+    """g1_slam.tf_chain must import, agree with the URDF, and keep its direction."""
+    name = "g1_slam.tf_chain transform direction and URDF agreement"
+    tf_chain, exc = _import_tf_chain(pkg_path)
+    if tf_chain is None:
+        results.add(name, STATUS_FAIL,
+                    "cannot import g1_slam.tf_chain ({}); catkin_python_setup() must "
+                    "install the package from src/".format(exc))
+        return
+
+    problems = []
+
+    forward = tf_chain.translation_of(tf_chain.body_to_mid360())
+    if max(abs(a - b) for a, b in zip(forward, EXPECTED_EXTRINSIC_T)) > 1e-12:
+        problems.append("{} -> {} translation {} != fastlio extrinsic_T {}".format(
+            FASTLIO_BODY_FRAME, LIDAR_FRAME, forward, EXPECTED_EXTRINSIC_T))
+
+    rot = tf_chain.rotation_of(tf_chain.body_to_mid360())
+    flat = [rot[i][j] for i in range(3) for j in range(3)]
+    if max(abs(a - b) for a, b in zip(flat, EXPECTED_EXTRINSIC_R)) > 1e-12:
+        problems.append("{} -> {} rotation is not identity".format(
+            FASTLIO_BODY_FRAME, LIDAR_FRAME))
+
+    backward = tf_chain.translation_of(tf_chain.mid360_to_body())
+    if max(abs(f + b) for f, b in zip(forward, backward)) > 1e-12:
+        problems.append("{} -> {} {} is not the inverse of {} -> {} {}".format(
+            LIDAR_FRAME, FASTLIO_BODY_FRAME, backward,
+            FASTLIO_BODY_FRAME, LIDAR_FRAME, forward))
+
+    if pkg_path is not None:
+        urdf_path = os.path.join(pkg_path, URDF_REL)
+        if os.path.isfile(urdf_path):
+            try:
+                problems.extend(tf_chain.verify_against_urdf(urdf_path))
+            except Exception as exc:
+                problems.append("cannot verify against {}: {}".format(urdf_path, exc))
+
+    if problems:
+        results.add(name, STATUS_FAIL, "; ".join(problems))
+        return
+
+    results.add(name, STATUS_PASS,
+                "{} -> {} = {} (identity rotation), inverse checks out, and the "
+                "vendored URDF still matches tf_chain's joint constants".format(
+                    FASTLIO_BODY_FRAME, LIDAR_FRAME, list(forward)))
+
+
 def check_g1_tf_config(results, pkg_path, require_hardware):
-    name = "g1_tf.yaml validity and transform state"
+    """g1_tf.yaml must name the fixed frames, hold no paths, and not invent base_link."""
+    name = "g1_tf.yaml validity and frame wiring"
     if pkg_path is None:
         results.add(name, STATUS_FAIL, "cannot check, package path unknown")
         return
@@ -667,75 +851,113 @@ def check_g1_tf_config(results, pkg_path, require_hardware):
     cfg_path = os.path.join(pkg_path, TF_CONFIG_REL)
     try:
         import yaml
-        with open(cfg_path) as f:
-            cfg = yaml.safe_load(f)
+        with open(cfg_path) as handle:
+            cfg = yaml.safe_load(handle)
     except Exception as exc:
         results.add(name, STATUS_FAIL, "{}: {}".format(cfg_path, exc))
         return
 
-    try:
-        enabled = cfg["enabled"]
-        parent = cfg["parent_frame"]
-        child = cfg["child_frame"]
-        tvals = [float(cfg["translation"][k]) for k in ("x", "y", "z")]
-        rvals = [float(cfg["rotation_rpy"][k]) for k in ("roll", "pitch", "yaw")]
-    except (KeyError, IndexError, TypeError, ValueError) as exc:
-        results.add(name, STATUS_FAIL,
-                     "unexpected/invalid structure in {}: {}".format(cfg_path, exc))
+    if not isinstance(cfg, dict):
+        results.add(name, STATUS_FAIL, "{}: root is not a mapping".format(cfg_path))
         return
 
+    expected_frames = {
+        "world_frame": FASTLIO_MAP_FRAME,
+        "robot_root_frame": ROBOT_ROOT_FRAME,
+        "imu_frame": FASTLIO_BODY_FRAME,
+        "lidar_frame": LIDAR_FRAME,
+    }
     problems = []
-    if not isinstance(enabled, bool):
-        problems.append("'enabled' is not a bool: {!r}".format(enabled))
-    if parent != EXPECTED_TF_PARENT:
-        problems.append("parent_frame={!r} (must be {!r}; camera_init is the fixed "
-                        "world frame and is not an allowed static-TF parent)".format(
-                            parent, EXPECTED_TF_PARENT))
-    if child != EXPECTED_TF_CHILD:
-        problems.append("child_frame={!r} (must be {!r})".format(child, EXPECTED_TF_CHILD))
+    for key, want in sorted(expected_frames.items()):
+        if cfg.get(key) != want:
+            problems.append("{}={!r} (must be {!r})".format(key, cfg.get(key), want))
+
+    for key in ("odom_topic", "joint_states_topic", "waist_yaw_joint_name"):
+        value = cfg.get(key)
+        if not isinstance(value, str) or not value.strip():
+            problems.append("{} must be a non-empty string, got {!r}".format(key, value))
+
+    if cfg.get("waist_yaw_joint_name") not in (None, WAIST_YAW_JOINT):
+        problems.append("waist_yaw_joint_name={!r} (expected {!r})".format(
+            cfg.get("waist_yaw_joint_name"), WAIST_YAW_JOINT))
+
+    try:
+        timeout = float(cfg.get("joint_states_timeout"))
+        if timeout <= 0.0:
+            problems.append("joint_states_timeout must be > 0, got {}".format(timeout))
+    except (TypeError, ValueError):
+        problems.append("joint_states_timeout is not a number: {!r}".format(
+            cfg.get("joint_states_timeout")))
+
+    # roslaunch expands $(find ...) in launch XML only, never inside plain YAML
+    # loaded via rosparam. A literal substitution here would reach the node raw.
+    leaked = sorted(k for k, v in cfg.items() if isinstance(v, str) and "$(" in v)
+    if leaked:
+        problems.append("unexpanded ROS substitution in YAML key(s) {}; pass resolved "
+                        "paths from the launch file instead".format(", ".join(leaked)))
+
     if problems:
         results.add(name, STATUS_FAIL, "; ".join(problems))
         return
 
-    placeholder = all(v == 0.0 for v in tvals + rvals)
-    if enabled and placeholder:
+    alias = cfg.get("base_link_alias", "")
+    alias = "" if alias is None else str(alias)
+    if alias.strip():
         results.add(name, STATUS_FAIL,
-                     "static TF enabled but translation+rotation are all-zero "
-                     "placeholders; identity is not a measured transform")
-        return
-    if placeholder:
-        results.add(name, hardware_status(require_hardware),
-                     "static transform {} -> {} not yet measured (all zeros) and "
-                     "disabled; expected shipped state - measure base_link in the "
-                     "Mid-360 IMU frame, fill {}, then set enabled: true".format(
-                         parent, child, cfg_path))
+                    "base_link_alias={!r}: the {} -> {} mapping is an unresolved "
+                    "integration decision pending the navigation team; publishing a "
+                    "guessed transform is not supported".format(
+                        alias, ROBOT_ROOT_FRAME, UNRESOLVED_BASE_FRAME))
         return
 
-    results.add(name, STATUS_PASS,
-                 "{} -> {} xyz={} rpy={} enabled={}".format(parent, child, tvals, rvals, enabled))
+    results.add(name, hardware_status(require_hardware),
+                "{} -> {} wiring valid, no paths in YAML; {} -> {} deliberately "
+                "unresolved (base_link_alias empty) pending the navigation team".format(
+                    FASTLIO_MAP_FRAME, ROBOT_ROOT_FRAME,
+                    ROBOT_ROOT_FRAME, UNRESOLVED_BASE_FRAME))
 
 
-def check_g1_static_tf_script(results, pkg_path, timeout):
-    name = "g1_static_tf.py offline --check"
+def check_g1_tf_publisher_script(results, pkg_path, timeout):
+    name = "g1_tf_publisher.py offline --check"
     if pkg_path is None:
         results.add(name, STATUS_FAIL, "cannot check, package path unknown")
         return
 
-    script_path = os.path.join(pkg_path, "scripts", "g1_static_tf.py")
+    script_path = os.path.join(pkg_path, TF_PUBLISHER_REL)
     cfg_path = os.path.join(pkg_path, TF_CONFIG_REL)
-    code, output = run([sys.executable, script_path, "--check", "--config", cfg_path], timeout)
+    urdf_path = os.path.join(pkg_path, URDF_REL)
+    code, output = run([sys.executable, script_path, "--check",
+                        "--config", cfg_path, "--urdf", urdf_path], timeout)
     last_line = output.strip().splitlines()[-1] if output.strip() else ""
 
     if code == 0:
         results.add(name, STATUS_PASS, last_line or "configuration valid")
     elif code == 2:
-        results.add(name, STATUS_WAIT, last_line or "mounting transform pending measurement")
+        results.add(name, STATUS_WAIT, last_line or "pending an external interface")
     else:
         results.add(name, STATUS_FAIL,
-                     "g1_static_tf.py --check failed (code={}): {}".format(code, last_line))
+                    "g1_tf_publisher.py --check failed (code={}): {}".format(code, last_line))
 
 
-def check_g1_tf_launch(results, pkg_path, timeout):
+def check_robot_state_publisher_package(results, require_hardware):
+    """robot_state_publisher turns the URDF + /joint_states into the robot's TF."""
+    name = "robot_state_publisher package resolution"
+    try:
+        import rospkg
+        path = rospkg.RosPack().get_path(ROBOT_STATE_PUBLISHER_PKG)
+    except Exception as exc:
+        # An unprovisioned environment, not a defect in g1_slam: WAIT by default,
+        # FAIL under --require-hardware so an on-robot bring-up cannot skip it.
+        results.add(name, hardware_status(require_hardware),
+                    "{} is not installed ({}). g1_tf.launch cannot start the robot's "
+                    "TF tree without it. Install with: apt-get install -y {}".format(
+                        ROBOT_STATE_PUBLISHER_PKG, exc, ROBOT_STATE_PUBLISHER_APT))
+        return None
+    results.add(name, STATUS_PASS, "resolved at {}".format(path))
+    return path
+
+
+def check_g1_tf_launch(results, pkg_path, timeout, have_rsp):
     name = "g1_tf.launch XML and ROS package/node resolution"
     if pkg_path is None:
         results.add(name, STATUS_FAIL, "cannot check, package path unknown")
@@ -744,28 +966,55 @@ def check_g1_tf_launch(results, pkg_path, timeout):
     launch_path = os.path.join(pkg_path, "launch", "g1_tf.launch")
     try:
         import xml.etree.ElementTree as ET
-        ET.parse(launch_path)
+        tree = ET.parse(launch_path)
     except Exception as exc:
         results.add(name, STATUS_FAIL, "XML parse error in {}: {}".format(launch_path, exc))
         return
 
-    code, output = run(["roslaunch", "--nodes", PACKAGE_NAME, "g1_tf.launch"], timeout)
+    # The URDF path must come from a launch arg and be handed to the node as a
+    # resolved parameter - never written into the YAML.
+    root = tree.getroot()
+    textfile_params = [p.get("textfile") for p in root.findall("param")
+                       if p.get("name") == "robot_description"]
+    if not textfile_params or not any(t and "$(arg urdf_file)" in t for t in textfile_params):
+        results.add(name, STATUS_FAIL,
+                    "g1_tf.launch must load robot_description with "
+                    'textfile="$(arg urdf_file)"; found {}'.format(textfile_params))
+        return
+
+    # With robot_state_publisher absent, exercise the rest of the launch by
+    # disabling that node rather than reporting a false failure.
+    args = ["roslaunch", "--nodes", PACKAGE_NAME, "g1_tf.launch"]
+    suffix = ""
+    if not have_rsp:
+        args.append("robot_state_publisher:=false")
+        suffix = (" (checked with robot_state_publisher:=false because {} is not "
+                  "installed)".format(ROBOT_STATE_PUBLISHER_PKG))
+
+    code, output = run(args, timeout)
     if code != 0:
         last_line = output.strip().splitlines()[-1] if output.strip() else ""
         results.add(name, STATUS_FAIL,
-                     "roslaunch --nodes {} g1_tf.launch failed (code={}): {}".format(
-                         PACKAGE_NAME, code, last_line))
+                    "roslaunch --nodes {} g1_tf.launch failed (code={}): {}".format(
+                        PACKAGE_NAME, code, last_line))
         return
-    if TF_NODE_NAME not in output:
+
+    expected = [TF_NODE_NAME] + ([ROBOT_STATE_PUBLISHER_NODE] if have_rsp else [])
+    missing = [n for n in expected if n not in output]
+    if missing:
         results.add(name, STATUS_FAIL,
-                     "expected node {} not found in roslaunch --nodes output".format(TF_NODE_NAME))
+                    "expected node(s) {} not found in roslaunch --nodes output".format(
+                        ", ".join(missing)))
         return
 
-    results.add(name, STATUS_PASS, "XML valid, node {} resolves".format(TF_NODE_NAME))
+    status = STATUS_PASS if have_rsp else STATUS_WAIT
+    results.add(name, status,
+                "XML valid, robot_description from $(arg urdf_file), node(s) {} resolve{}".format(
+                    ", ".join(expected), suffix))
 
 
-def check_slam_bringup_wiring(results, pkg_path, timeout):
-    name = "slam_bringup.launch composes driver + FAST-LIO2 + static TF"
+def check_slam_bringup_wiring(results, pkg_path, timeout, have_rsp):
+    name = "slam_bringup.launch composes driver + FAST-LIO2 + robot TF"
     if pkg_path is None:
         results.add(name, STATUS_FAIL, "cannot check, package path unknown")
         return
@@ -778,22 +1027,32 @@ def check_slam_bringup_wiring(results, pkg_path, timeout):
         results.add(name, STATUS_FAIL, "XML parse error in {}: {}".format(launch_path, exc))
         return
 
-    code, output = run(["roslaunch", "--nodes", PACKAGE_NAME, "slam_bringup.launch"], timeout)
+    args = ["roslaunch", "--nodes", PACKAGE_NAME, "slam_bringup.launch"]
+    suffix = ""
+    if not have_rsp:
+        args.append("robot_state_publisher:=false")
+        suffix = (" (checked with robot_state_publisher:=false because {} is not "
+                  "installed)".format(ROBOT_STATE_PUBLISHER_PKG))
+
+    code, output = run(args, timeout)
     if code != 0:
         last_line = output.strip().splitlines()[-1] if output.strip() else ""
         results.add(name, STATUS_FAIL,
-                     "roslaunch --nodes {} slam_bringup.launch failed (code={}): {}".format(
-                         PACKAGE_NAME, code, last_line))
+                    "roslaunch --nodes {} slam_bringup.launch failed (code={}): {}".format(
+                        PACKAGE_NAME, code, last_line))
         return
 
-    missing = [n for n in (LIVOX_NODE_NAME, FASTLIO_NODE_NAME, TF_NODE_NAME) if n not in output]
+    expected = [LIVOX_NODE_NAME, FASTLIO_NODE_NAME, TF_NODE_NAME]
+    if have_rsp:
+        expected.append(ROBOT_STATE_PUBLISHER_NODE)
+    missing = [n for n in expected if n not in output]
     if missing:
         results.add(name, STATUS_FAIL,
-                     "slam_bringup.launch does not resolve node(s): {}".format(", ".join(missing)))
+                    "slam_bringup.launch does not resolve node(s): {}".format(", ".join(missing)))
         return
 
-    results.add(name, STATUS_PASS,
-                 "resolves {}, {}, {}".format(LIVOX_NODE_NAME, FASTLIO_NODE_NAME, TF_NODE_NAME))
+    status = STATUS_PASS if have_rsp else STATUS_WAIT
+    results.add(name, status, "resolves {}{}".format(", ".join(expected), suffix))
 
 
 def _parse_fastlio_tf_edges(text):
@@ -815,8 +1074,8 @@ def check_fastlio_frame_contract(results, fastlio_pkg_path):
 
     src_path = os.path.join(fastlio_pkg_path, "src", "laserMapping.cpp")
     try:
-        with open(src_path) as f:
-            text = f.read()
+        with open(src_path) as handle:
+            text = handle.read()
     except Exception as exc:
         results.add(name, STATUS_WAIT, "cannot read {}: {}".format(src_path, exc))
         return
@@ -824,26 +1083,28 @@ def check_fastlio_frame_contract(results, fastlio_pkg_path):
     edges = _parse_fastlio_tf_edges(text)
     if not edges:
         results.add(name, STATUS_FAIL,
-                     "no tf::StampedTransform broadcast found in {}; cannot confirm "
-                     "FAST-LIO2 still publishes {} -> {}".format(
-                         src_path, FASTLIO_MAP_FRAME, FASTLIO_BODY_FRAME))
+                    "no tf::StampedTransform broadcast found in {}; cannot confirm "
+                    "FAST-LIO2 still publishes {} -> {}".format(
+                        src_path, FASTLIO_MAP_FRAME, FASTLIO_BODY_FRAME))
         return
 
     if sorted(edges) != sorted(FASTLIO_TF_EDGES):
         results.add(name, STATUS_FAIL,
-                     "FAST-LIO2 now broadcasts {} (expected exactly {}); the static TF "
-                     "wiring in g1_tf.yaml may create a parent conflict or a gap".format(
-                         edges, FASTLIO_TF_EDGES))
+                    "FAST-LIO2 now broadcasts {} (expected exactly {}); the "
+                    "{} -> {} chain in g1_tf_publisher may be wrong".format(
+                        edges, FASTLIO_TF_EDGES, FASTLIO_MAP_FRAME, ROBOT_ROOT_FRAME))
         return
 
     results.add(name, STATUS_PASS,
-                 "FAST-LIO2 broadcasts {} -> {} (dynamic); static TF hangs {} under {}".format(
-                     FASTLIO_MAP_FRAME, FASTLIO_BODY_FRAME, EXPECTED_TF_CHILD, EXPECTED_TF_PARENT))
+                "FAST-LIO2 broadcasts {} -> {} (dynamic); g1_tf_publisher adds "
+                "{} -> {} as a second child of {}".format(
+                    FASTLIO_MAP_FRAME, FASTLIO_BODY_FRAME,
+                    FASTLIO_MAP_FRAME, ROBOT_ROOT_FRAME, FASTLIO_MAP_FRAME))
 
 
-def check_static_tf_single_parent(results, pkg_path, fastlio_pkg_path):
-    """Guard: the whole TF tree must keep exactly one parent per frame."""
-    name = "TF tree has a single parent per frame (no camera_init/body re-parenting)"
+def check_tf_single_parent(results, pkg_path, fastlio_pkg_path):
+    """The whole tree - FAST-LIO2 + our node + the URDF - keeps one parent per frame."""
+    name = "TF tree has a single parent per frame (FAST-LIO2 + g1_tf_publisher + URDF)"
     if pkg_path is None:
         results.add(name, STATUS_FAIL, "cannot check, package path unknown")
         return
@@ -853,48 +1114,120 @@ def check_static_tf_single_parent(results, pkg_path, fastlio_pkg_path):
     if fastlio_pkg_path is not None:
         src_path = os.path.join(fastlio_pkg_path, "src", "laserMapping.cpp")
         try:
-            with open(src_path) as f:
-                parsed = _parse_fastlio_tf_edges(f.read())
+            with open(src_path) as handle:
+                parsed = _parse_fastlio_tf_edges(handle.read())
             if parsed:
                 fastlio_edges = parsed
         except OSError:
             pass
 
-    cfg_path = os.path.join(pkg_path, TF_CONFIG_REL)
-    try:
-        import yaml
-        with open(cfg_path) as f:
-            cfg = yaml.safe_load(f)
-        parent = cfg["parent_frame"]
-        child = cfg["child_frame"]
-    except Exception as exc:
-        results.add(name, STATUS_FAIL, "cannot read frames from {}: {}".format(cfg_path, exc))
+    tf_chain, exc = _import_tf_chain(pkg_path)
+    if tf_chain is None:
+        results.add(name, STATUS_FAIL, "cannot import g1_slam.tf_chain: {}".format(exc))
         return
 
-    # Build the child -> parent map for every static + dynamic edge and flag
-    # any child that is claimed twice.
-    all_edges = list(fastlio_edges) + [(parent, child)]
+    urdf_path = os.path.join(pkg_path, URDF_REL)
+    try:
+        urdf_edges = [(parent, child) for parent, child, _n, _t
+                      in tf_chain.joint_edges(urdf_path)]
+    except Exception as exc:
+        results.add(name, STATUS_FAIL, "cannot read joints from {}: {}".format(urdf_path, exc))
+        return
+
+    published = [(EXPECTED_TF_PARENT, EXPECTED_TF_CHILD)]
+    all_edges = list(fastlio_edges) + published + urdf_edges
+
     parents_of = {}
     conflicts = []
-    for p, c in all_edges:
-        if c in parents_of and parents_of[c] != p:
-            conflicts.append("{} is parented by both {} and {}".format(c, parents_of[c], p))
-        parents_of[c] = p
-        if p == c:
-            conflicts.append("{} is its own parent".format(c))
+    for parent, child in all_edges:
+        if child in parents_of and parents_of[child] != parent:
+            conflicts.append("{} is parented by both {} and {}".format(
+                child, parents_of[child], parent))
+        parents_of[child] = parent
+        if parent == child:
+            conflicts.append("{} is its own parent".format(child))
 
-    owned = {c for _p, c in fastlio_edges}
-    if child in owned:
-        conflicts.append("static TF child {!r} is already broadcast by FAST-LIO2 "
-                         "(it would get a second parent)".format(child))
+    # The Mid-360 extrinsic must stay a math constant. Broadcasting it would make
+    # mid360_link a child of both torso_link (URDF) and body (FAST-LIO2's frame).
+    if (FASTLIO_BODY_FRAME, LIDAR_FRAME) in all_edges:
+        conflicts.append("{} -> {} must not be broadcast: {} is already a URDF child "
+                         "of {}".format(FASTLIO_BODY_FRAME, LIDAR_FRAME,
+                                        LIDAR_FRAME, TORSO_FRAME))
+
+    # Nothing may invent base_link while the mapping is unresolved.
+    frames = set(parents_of) | {p for p, _c in all_edges}
+    if UNRESOLVED_BASE_FRAME in frames:
+        conflicts.append("{} appears in the TF tree but the {} -> {} mapping is still "
+                         "unresolved with the navigation team".format(
+                             UNRESOLVED_BASE_FRAME, ROBOT_ROOT_FRAME, UNRESOLVED_BASE_FRAME))
+
+    roots = sorted(frames - set(parents_of))
+    if roots != [FASTLIO_MAP_FRAME]:
+        conflicts.append("expected {} to be the only root frame, got {}".format(
+            FASTLIO_MAP_FRAME, roots))
 
     if conflicts:
         results.add(name, STATUS_FAIL, "; ".join(sorted(set(conflicts))))
         return
 
-    edge_strs = ["{} -> {}".format(p, c) for p, c in all_edges]
     results.add(name, STATUS_PASS,
-                 "single parent per frame; edges: {}".format(", ".join(edge_strs)))
+                "single parent per frame across {} frame(s): {} -> {{{}, {}}}, then the "
+                "URDF chain {} -> {} -> {}; {} absent as required".format(
+                    len(frames), FASTLIO_MAP_FRAME, FASTLIO_BODY_FRAME, ROBOT_ROOT_FRAME,
+                    ROBOT_ROOT_FRAME, TORSO_FRAME, LIDAR_FRAME, UNRESOLVED_BASE_FRAME))
+
+
+def check_joint_states(results, master, timeout, require_hardware):
+    """/joint_states is external: absent means WAIT, never FAIL, never fabricated."""
+    name = "external {} carries {}".format(JOINT_STATES_TOPIC, WAIST_YAW_JOINT)
+    if master is None:
+        results.add(name, hardware_status(require_hardware),
+                    "no ROS master, so {} cannot be inspected. It is an external "
+                    "interface owned by the robot-control / integration team; g1_slam "
+                    "consumes it and never synthesizes it.".format(JOINT_STATES_TOPIC))
+        return
+
+    try:
+        published = [t for t, _ty in master.getPublishedTopics("")[2]]
+    except Exception as exc:
+        results.add(name, hardware_status(require_hardware),
+                    "cannot list topics from the master: {}".format(exc))
+        return
+
+    if JOINT_STATES_TOPIC not in published:
+        results.add(name, hardware_status(require_hardware),
+                    "{} is not published. {} -> {} will not be broadcast until the "
+                    "robot-control / integration team provides it; g1_tf_publisher "
+                    "stays up and publishes nothing rather than freezing {} at 0 "
+                    "(which costs ~1 degree of heading per degree of waist rotation)".format(
+                        JOINT_STATES_TOPIC, FASTLIO_MAP_FRAME, ROBOT_ROOT_FRAME,
+                        WAIST_YAW_JOINT))
+        return
+
+    try:
+        import rospy
+        from sensor_msgs.msg import JointState
+        global _node_initialized
+        if not _node_initialized:
+            rospy.init_node("g1_slam_health_check", anonymous=True, disable_signals=True)
+            _node_initialized = True
+        msg = rospy.wait_for_message(JOINT_STATES_TOPIC, JointState, timeout=timeout)
+    except Exception as exc:
+        results.add(name, hardware_status(require_hardware),
+                    "{} is advertised but no message arrived within {}s: {}".format(
+                        JOINT_STATES_TOPIC, timeout, exc))
+        return
+
+    if WAIST_YAW_JOINT not in list(msg.name):
+        results.add(name, hardware_status(require_hardware),
+                    "{} carries {} joint(s) but not {!r}; no {} -> {} can be "
+                    "computed".format(JOINT_STATES_TOPIC, len(msg.name), WAIST_YAW_JOINT,
+                                      FASTLIO_MAP_FRAME, ROBOT_ROOT_FRAME))
+        return
+
+    results.add(name, STATUS_PASS,
+                "{} publishes {!r} among {} joint(s)".format(
+                    JOINT_STATES_TOPIC, WAIST_YAW_JOINT, len(msg.name)))
 
 
 def check_host_subnet(results, require_hardware):
@@ -1056,14 +1389,23 @@ def main():
         check_topic(results, master, PATH_TOPIC, args.timeout, args.require_hardware)
 
     elif args.component == "tf":
-        # Entirely offline: file/XML/frame-contract checks, no ROS master needed.
+        # Offline: vendored-URDF integrity, chain math, config, launch resolution.
         fastlio_pkg_path = check_fastlio_package(results)
+        check_vendored_urdf(results, pkg_path)
+        check_urdf_source_md(results, pkg_path)
+        check_tf_chain_module(results, pkg_path)
         check_g1_tf_config(results, pkg_path, args.require_hardware)
-        check_g1_static_tf_script(results, pkg_path, args.timeout)
-        check_g1_tf_launch(results, pkg_path, args.timeout)
-        check_slam_bringup_wiring(results, pkg_path, args.timeout)
+        check_g1_tf_publisher_script(results, pkg_path, args.timeout)
+        have_rsp = check_robot_state_publisher_package(results, args.require_hardware) is not None
+        check_g1_tf_launch(results, pkg_path, args.timeout, have_rsp)
+        check_slam_bringup_wiring(results, pkg_path, args.timeout, have_rsp)
         check_fastlio_frame_contract(results, fastlio_pkg_path)
-        check_static_tf_single_parent(results, pkg_path, fastlio_pkg_path)
+        check_tf_single_parent(results, pkg_path, fastlio_pkg_path)
+
+        # Runtime: /joint_states is external. WAIT by default, FAIL only with
+        # --require-hardware, so an offline/CI run never reports a false defect.
+        master = check_ros_master(results, args.timeout, args.require_hardware)
+        check_joint_states(results, master, args.timeout, args.require_hardware)
 
     elif args.component == "mapsave":
         check_maps_dir(results, pkg_path)

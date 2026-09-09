@@ -1,74 +1,82 @@
 # =============================================================================
-# G1 TF framework - static transform that attaches the robot to FAST-LIO2
+# G1 TF framework - dynamic camera_init -> pelvis for FAST-LIO2
 # =============================================================================
 #
-# WHAT FAST-LIO2 ALREADY BROADCASTS
-# --------------------------------------------------------------------------
-# laserMapping.cpp (publish_odometry(), one tf::TransformBroadcaster) sends,
-# every odometry cycle:
-#
-#       camera_init  --(dynamic)-->  body
-#
-#   camera_init : map / odometry origin, fixed at start
-#   body        : FAST-LIO's tracked pose = the Mid-360 IMU frame
-#
-# TREE DIRECTION - READ CAREFULLY
-# --------------------------------------------------------------------------
-# In TF every frame has exactly ONE parent. `body` already has a parent
-# (camera_init), so we must NOT publish anything -> body (that would give
-# `body` two parents and break TF). Instead this transform hangs the robot
-# base UNDER `body`:
-#
-#       camera_init --(FAST-LIO, dynamic)--> body --(this file, static)--> base_link
-#
-#   parent_frame = body        (owned by FAST-LIO)
-#   child_frame  = base_link    (has no other parent -> conflict-free)
-#
-# So the six numbers below are the pose of `base_link` **expressed in the
-# `body` (Mid-360 IMU) frame** - i.e. base_link-as-seen-from-the-IMU. That is
-# the INVERSE of the intuitive "where is the LiDAR bolted on the robot"
-# (base_link -> sensor) mounting pose. Measure base_link relative to the
-# Mid-360 IMU directly, or measure the mounting pose and invert it.
-#
+# THE TREE
 # -----------------------------------------------------------------------------
-#  !!! NOT MEASURED - DO NOT ENABLE AS-IS !!!
-# -----------------------------------------------------------------------------
-# Every translation and rotation value below is a ZERO PLACEHOLDER. Zeros
-# assert that base_link coincides exactly with the Mid-360 IMU, which is
-# wrong and would corrupt every downstream transform.
+#   camera_init --(FAST-LIO2 /laserMapping, dynamic)--> body
+#   camera_init --(g1_tf_publisher,          dynamic)--> pelvis
+#   pelvis      --(robot_state_publisher, waist_yaw_joint)--> torso_link
+#   torso_link  --(robot_state_publisher, fixed)--> mid360_link, head_link, ...
 #
-# Before setting `enabled: true` you MUST replace the placeholders with the
-# real measured values. The offline health check
-# (`slam_health_check.py --component tf`) fails if this file is enabled while
-# the values are still all zero, and fails if the frames are wired in a way
-# that would give any frame two parents.
+#   camera_init : FAST-LIO2 odometry origin, re-created every session
+#   body        : FAST-LIO2's tracked pose = the Mid-360 IMU frame
+#   mid360_link : the Mid-360 LiDAR frame, as named by the official URDF
+#   pelvis      : the official URDF root, and the frame this package publishes
+#
+# WHY THIS IS NOT A STATIC TRANSFORM
+# -----------------------------------------------------------------------------
+# The Mid-360 is bolted to `torso_link`, and `torso_link` hangs off `pelvis`
+# through `waist_yaw_joint`, which is REVOLUTE. An earlier design published a
+# static body -> base_link; that was wrong. Freezing the waist costs about one
+# degree of heading per degree of waist rotation, which is worse for navigation
+# than publishing nothing at all. g1_tf_publisher therefore re-evaluates
+#
+#     camera_init -> pelvis = (camera_init -> body)   from /Odometry
+#                           . (body -> mid360_link)   FAST-LIO2 extrinsic, const
+#                           . (mid360_link -> pelvis) URDF chain at waist_yaw
+#
+# every odometry cycle. `body -> mid360_link` is a math constant only and is
+# never broadcast: `mid360_link` already has `torso_link` as its parent from
+# robot_state_publisher, so broadcasting it would give a frame two parents and
+# break TF. Its direction is pinned by test/test_tf_transforms.py.
+#
+# NO PATHS IN THIS FILE
+# -----------------------------------------------------------------------------
+# roslaunch expands $(find ...) in launch XML, NOT inside a plain YAML file
+# loaded with `rosparam command="load"`. A literal "$(find g1_slam)/..." written
+# here would reach the node unexpanded. The URDF path is therefore owned by
+# g1_tf.launch (arg `urdf_file`) and handed to the node as the already-resolved
+# ~urdf_path parameter. Keep this file to literal values only; the node rejects
+# any value still containing "$(".
+#
+# EXTERNAL INTERFACES - CONSUMED, NOT PROVIDED
+# -----------------------------------------------------------------------------
+# /joint_states carrying waist_yaw_joint is owned by the robot-control /
+# integration team. This package never synthesizes it. While it is missing or
+# stale the node stays up, warns, and publishes NOTHING; the health check
+# reports WAIT.
 # -----------------------------------------------------------------------------
 
-# Master switch. Left false so the SLAM bring-up never publishes an unmeasured
-# transform. Flip to true only after the values below are real.
-enabled: false
+# ---- Frames. Fixed by FAST-LIO2 and the official URDF; the node rejects any
+#      other value rather than letting a typo silently re-wire the tree. -------
+world_frame: camera_init       # FAST-LIO2 odometry origin (parent of what we send)
+robot_root_frame: pelvis       # official URDF root (child of what we send)
+imu_frame: body                # FAST-LIO2's tracked frame = Mid-360 IMU
+lidar_frame: mid360_link       # Mid-360 LiDAR frame, per the URDF
 
-# Parent frame: MUST be exactly `body` (FAST-LIO's tracked Mid-360 IMU frame).
-# camera_init is rejected - it is the fixed world/map frame, and base_link is
-# rigid to the sensor, not to the world. Setting base_link here is also
-# rejected: it would invert the tree and give `body` a second parent.
-parent_frame: body
+# ---- Interfaces this node consumes ------------------------------------------
+odom_topic: /Odometry              # nav_msgs/Odometry from FAST-LIO2 (camera_init -> body)
+joint_states_topic: /joint_states  # sensor_msgs/JointState, EXTERNAL (robot-control)
+waist_yaw_joint_name: waist_yaw_joint
 
-# Child frame: the G1 base frame used across this repo. Must be a frame that
-# nothing else parents.
-child_frame: base_link
+# Maximum age, in seconds, of the latest waist_yaw_joint sample relative to the
+# odometry stamp. Beyond this the node publishes nothing rather than a stale
+# heading. The Mid-360 runs at ~10 Hz, so 0.5s is about five odometry cycles.
+joint_states_timeout: 0.5
 
-# ---- base_link expressed in `body` - PLACEHOLDERS, REQUIRE REAL MEASUREMENT ----
-# Position of child_frame's origin in parent_frame, in metres.
-translation:
-  x: 0.0   # PLACEHOLDER - measure on the real robot
-  y: 0.0   # PLACEHOLDER - measure on the real robot
-  z: 0.0   # PLACEHOLDER - measure on the real robot
+# Seconds between repeats of the "waiting for /joint_states" warning.
+warn_period: 5.0
 
-# Orientation of child_frame in parent_frame, in radians, applied as
-# yaw (Z) then pitch (Y) then roll (X) - the same convention as
-# tf2_ros static_transform_publisher.
-rotation_rpy:
-  roll: 0.0    # PLACEHOLDER - measure on the real robot
-  pitch: 0.0   # PLACEHOLDER - measure on the real robot
-  yaw: 0.0     # PLACEHOLDER - measure on the real robot
+# ---- UNRESOLVED: pelvis -> base_link ----------------------------------------
+# `pelvis` is the official URDF root and the frame this package publishes.
+# Whether navigation wants `base_link` as an alias of `pelvis`, as a
+# ground-projected frame beneath it, or under its own name is THEIR decision and
+# has not been made. Nothing here invents it.
+#
+# Empty is the only supported value and means "not decided". The node rejects a
+# non-empty value outright rather than publishing a guessed transform. Do not
+# fill this in without sign-off from the navigation team; note that
+# perception/ already documents its results as being in `base_link`, so that
+# team is affected by the same decision.
+base_link_alias: ""

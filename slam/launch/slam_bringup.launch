@@ -1,25 +1,36 @@
 <launch>
-  <!-- Top-level SLAM bring-up for the G1: starts the Livox Mid-360 driver and
-       FAST-LIO2 mapping together in a single roslaunch.
+  <!-- Top-level SLAM bring-up for the G1: starts the Livox Mid-360 driver,
+       FAST-LIO2 mapping, and the robot TF tree together in a single roslaunch.
 
-       Composes g1_slam's two building-block launch files:
+       Composes g1_slam's building-block launch files:
          - sensors.launch          -> livox_ros_driver2 node /livox_lidar_publisher2
                                       (publishes /livox/lidar and /livox/imu)
          - fastlio_mapping.launch  -> fast_lio node /laserMapping
                                       (subscribes to the above, publishes
-                                       /Odometry, /cloud_registered, /path)
-         - g1_tf.launch            -> g1_slam node /g1_static_tf
-                                      (static body -> base_link, hung under
-                                       FAST-LIO's camera_init -> body; ships
-                                       disabled until measured - see
-                                       config/g1_tf.yaml)
+                                       /Odometry, /cloud_registered, /path, and
+                                       TF camera_init -> body)
+         - g1_tf.launch            -> robot_state_publisher + /g1_tf_publisher
+                                      (robot_description from the vendored URDF,
+                                       and dynamic camera_init -> pelvis)
+
+       The Mid-360 is mounted on torso_link and waist_yaw_joint is revolute, so
+       camera_init -> pelvis is recomputed every odometry cycle from an EXTERNAL
+       /joint_states owned by the robot-control / integration team. Without that
+       topic the TF node comes up, warns, and publishes nothing - this bring-up
+       still runs, maps, and saves maps as normal.
 
        RViz is disabled by default so this runs headless (container / robot).
        Neither included file starts RViz on its own; pass rviz:=true to bring up
-       FAST-LIO2's visualization. -->
+       FAST-LIO2's visualization. Note the vendored URDF has no meshes, so an
+       RViz RobotModel display would render no geometry (see urdf/SOURCE.md). -->
 
   <arg name="rviz" default="false"/>
-  <arg name="static_tf" default="true"/>
+
+  <!-- Robot TF tree (robot_state_publisher + camera_init -> pelvis). -->
+  <arg name="robot_tf" default="true"/>
+  <arg name="urdf_file" default="$(find g1_slam)/urdf/g1_23dof_mode_10.urdf"/>
+  <!-- Set false if the integration bring-up already runs a robot_state_publisher. -->
+  <arg name="robot_state_publisher" default="true"/>
 
   <!-- Livox Mid-360 driver -->
   <include file="$(find g1_slam)/launch/sensors.launch"/>
@@ -27,9 +38,12 @@
   <!-- FAST-LIO2 mapping -->
   <include file="$(find g1_slam)/launch/fastlio_mapping.launch"/>
 
-  <!-- body -> base_link static TF framework (no transform published until
-       config/g1_tf.yaml is measured and enabled). -->
-  <include file="$(find g1_slam)/launch/g1_tf.launch" if="$(arg static_tf)"/>
+  <!-- Robot description + dynamic camera_init -> pelvis. Publishes no TF until
+       /joint_states carries waist_yaw_joint. -->
+  <include file="$(find g1_slam)/launch/g1_tf.launch" if="$(arg robot_tf)">
+    <arg name="urdf_file" value="$(arg urdf_file)"/>
+    <arg name="robot_state_publisher" value="$(arg robot_state_publisher)"/>
+  </include>
 
   <!-- Optional visualization, off by default. -->
   <group if="$(arg rviz)">

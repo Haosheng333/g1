@@ -1,21 +1,46 @@
 <launch>
-  <!-- G1 TF framework: static transform body -> base_link.
+  <!-- G1 TF framework: dynamic camera_init -> pelvis, plus the robot's own tree.
 
-       FAST-LIO2 broadcasts camera_init -> body (dynamic). To keep one parent
-       per frame this hangs the robot base UNDER body, giving:
-           camera_init -> body -> base_link
+       FAST-LIO2 broadcasts camera_init -> body (dynamic; body is the Mid-360
+       IMU). This launch adds the two pieces that connect the robot to it:
 
-       The g1_static_tf node reads config/g1_tf.yaml. That file ships with
-       `enabled: false` and all-zero placeholder values, so by default this
-       launch brings the node up but publishes NO transform - it only logs a
-       warning that the transform still needs to be measured.
+         robot_state_publisher  pelvis -> torso_link (waist_yaw_joint) -> ...
+         g1_tf_publisher        camera_init -> pelvis (dynamic)
 
-       To activate: measure base_link's pose in the Mid-360 IMU (body) frame,
-       fill in config/g1_tf.yaml, set `enabled: true`. Nothing here changes. -->
+       giving camera_init -> pelvis -> torso_link -> mid360_link with exactly one
+       parent per frame.
 
+       The Mid-360 sits on torso_link, and waist_yaw_joint between pelvis and
+       torso_link is REVOLUTE, so this cannot be a static transform. The node
+       needs /joint_states carrying waist_yaw_joint - an EXTERNAL interface owned
+       by the robot-control / integration team. Until that topic exists the node
+       comes up, warns, and publishes nothing. It never fabricates joint states,
+       and it never publishes base_link (still unresolved with navigation).
+
+       PATH RESOLUTION: roslaunch expands $(find ...) here, in launch XML - it
+       does NOT expand it inside config/g1_tf.yaml. So urdf_file is an arg, it
+       feeds robot_description via textfile=, and the same resolved value is
+       handed to the node as the ~urdf_path parameter. -->
+
+  <arg name="urdf_file" default="$(find g1_slam)/urdf/g1_23dof_mode_10.urdf"/>
   <arg name="config" default="$(find g1_slam)/config/g1_tf.yaml"/>
 
-  <node pkg="g1_slam" type="g1_static_tf.py" name="g1_static_tf" output="screen">
+  <!-- Set false when the integration bring-up already runs a
+       robot_state_publisher for the whole robot; two publishers would fight
+       over /tf. -->
+  <arg name="robot_state_publisher" default="true"/>
+
+  <!-- Vendored copy of the official g1_23dof_mode_10 description. Kinematics and
+       TF only: the mesh references are relative and the meshes are not vendored,
+       so RViz will render no geometry. See urdf/SOURCE.md. -->
+  <param name="robot_description" textfile="$(arg urdf_file)"/>
+
+  <node if="$(arg robot_state_publisher)"
+        pkg="robot_state_publisher" type="robot_state_publisher"
+        name="robot_state_publisher" output="screen"/>
+
+  <node pkg="g1_slam" type="g1_tf_publisher.py" name="g1_tf_publisher" output="screen">
     <rosparam command="load" file="$(arg config)"/>
+    <param name="urdf_path" value="$(arg urdf_file)"/>
   </node>
 </launch>

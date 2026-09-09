@@ -6,17 +6,23 @@ find_package(catkin REQUIRED COMPONENTS
   rospy
   roslaunch
   sensor_msgs
+  nav_msgs
 )
 
 # libpcl-dev / pcl_ros provide these; used only by the offline pcd_to_map tool.
 find_package(PCL REQUIRED COMPONENTS common io)
+
+# Installs the g1_slam Python package from src/g1_slam (see setup.py) so that
+# nodes and tests can `import g1_slam.tf_chain`. MUST come before
+# catkin_package().
+catkin_python_setup()
 
 catkin_package()
 
 catkin_install_python(PROGRAMS
   scripts/slam_health_check.py
   scripts/save_map.py
-  scripts/g1_static_tf.py
+  scripts/g1_tf_publisher.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
@@ -50,3 +56,16 @@ install(DIRECTORY config/
 install(DIRECTORY maps/
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/maps
 )
+
+# Vendored official robot description (URDF + upstream LICENSE + SOURCE.md).
+# g1_tf.launch loads it with textfile="$(find g1_slam)/urdf/...", so it must be
+# installed alongside launch/ and config/.
+install(DIRECTORY urdf/
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/urdf
+)
+
+if(CATKIN_ENABLE_TESTING)
+  # Transform-direction and URDF-agreement tests. nose, not pytest - see the
+  # python3-nose test_depend in package.xml.
+  catkin_add_nosetests(test)
+endif()

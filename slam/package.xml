@@ -13,12 +13,24 @@
   <depend>rospy</depend>
   <depend>roslaunch</depend>
   <depend>sensor_msgs</depend>
+  <!-- g1_tf_publisher.py consumes FAST-LIO2's /Odometry. -->
+  <depend>nav_msgs</depend>
   <depend>livox_ros_driver2</depend>
   <exec_depend>fast_lio</exec_depend>
+
+  <!-- g1_tf.launch: robot_description -> pelvis -> torso_link -> mid360_link.
+       The URDF itself is vendored in urdf/ (g1_description is a plain directory
+       in unitree_ros with no package.xml, so it cannot be a dependency). -->
+  <exec_depend>robot_state_publisher</exec_depend>
+  <!-- g1_tf_publisher.py broadcasts camera_init -> pelvis. -->
+  <exec_depend>tf2_ros</exec_depend>
 
   <!-- map_server.launch serves generated 2D maps on /map and /map_metadata. -->
   <exec_depend>map_server</exec_depend>
 
   <!-- Offline pcd_to_map converter only. -->
   <depend>libpcl-all-dev</depend>
+
+  <!-- test/ is run by catkin_add_nosetests(); nose, not pytest. -->
+  <test_depend>python3-nose</test_depend>
 </package>
