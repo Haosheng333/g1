@@ -1,0 +1,7 @@
+# catkin outputs
+build/
+devel/
+install/
+.catkin_workspace
+# External FAST-LIO2 clone (see README.md for how it is fetched and patched)
+fast_lio/
