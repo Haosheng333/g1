@@ -1,0 +1,30 @@
+# Grip presets for the Revo2 hand.
+#
+# Order is [thumb_metacarpal, thumb_proximal, index, middle, ring, pinky] --
+# 6 values, matching the real hand's actual 6 actuated DOF (the other 5
+# fingers' distal joints are mechanically coupled to their proximal joint,
+# not independently driven; thumb has both a rotation and a flex joint).
+#
+# positions are raw units 0-1000: 1000 = fully open, 0 = fully closed
+# (converted internally to each joint's real radian range).
+
+pre_grasp:
+  positions: [950, 950, 950, 950, 950, 950]
+  speed: 600
+  force_limit: 200
+  settle_tolerance: 40
+  settle_timeout_s: 3.0
+
+grasp:
+  positions: [300, 250, 150, 150, 150, 150]
+  speed: 300
+  force_limit: 450
+  settle_tolerance: 40
+  settle_timeout_s: 3.0
+
+release:
+  positions: [950, 950, 950, 950, 950, 950]
+  speed: 600
+  force_limit: 200
+  settle_tolerance: 40
+  settle_timeout_s: 3.0
