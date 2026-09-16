@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""
+hand_node.py — Module 3.2: thin Trigger services over the hand backend.
+
+One instance runs per hand side. Services are generated from whatever
+presets exist in config/finger_presets.yaml (currently pre_grasp / grasp /
+release) — add a new preset to the YAML and it shows up as a new Trigger
+service automatically, no code change here.
+
+Real hardware:  rosrun hand_control hand_node.py _side:=left
+Sim (MuJoCo):   rosrun hand_control hand_node.py _side:=left _sim:=true _render:=true
+"""
+
+import asyncio
+import os
+import threading
+from typing import Optional
+
+import rospy
+from std_srvs.srv import Trigger, TriggerResponse
+
+from hand_control.finger_presets import load_presets
+from hand_control.revo_hand_link import RevoHandLink
+
+try:
+    from hand_control.hand_sim_link import (
+        RevoHandSimLink, real_hand_joint_names, real_hand_actuator_names, real_hand_finger_bodies,
+    )
+except ImportError:
+    RevoHandSimLink = None
+
+
+class AsyncLoopThread:
+    """Owns one asyncio event loop running forever on its own thread, so
+    rospy's synchronous Trigger callbacks can drive an async backend."""
+
+    def __init__(self):
+        self.loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self):
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_forever()
+
+    def start(self):
+        self._thread.start()
+
+    def run_coro(self, coro, timeout: Optional[float] = None):
+        future = asyncio.run_coroutine_threadsafe(coro, self.loop)
+        return future.result(timeout=timeout)
+
+    def stop(self):
+        self.loop.call_soon_threadsafe(self.loop.stop)
+
+
+class HandNode:
+    def __init__(self):
+        rospy.init_node("hand_node")
+
+        side = rospy.get_param("~side", "left")
+        use_sim = rospy.get_param("~sim", False)
+        presets_yaml = rospy.get_param("~presets_yaml", None)  # None -> package default
+
+        self._presets = load_presets(presets_yaml)
+
+        self._async = AsyncLoopThread()
+        self._async.start()
+
+        if use_sim:
+            if RevoHandSimLink is None:
+                raise RuntimeError("~sim:=true but mujoco / hand_control.hand_sim_link is not importable")
+            with_bottle = rospy.get_param("~with_bottle", False)
+            model_file = f"{side}_hand_scene.xml" if with_bottle else f"{side}_hand.xml"
+            default_model = os.path.join(
+                os.path.dirname(__file__), "..", "config", "revo2_hand_real", model_file
+            )
+            model_path = rospy.get_param("~mujoco_model", default_model)
+            render = rospy.get_param("~render", True)
+            self._link = RevoHandSimLink(
+                model_path=model_path,
+                joint_names=real_hand_joint_names(side),
+                actuator_names=real_hand_actuator_names(side),
+                finger_bodies=real_hand_finger_bodies(side),  # compliant closing, harmless even with no object present
+                render=render,
+            )
+            self._async.run_coro(self._link.connect(), timeout=5.0)
+            rospy.loginfo(f"[hand_{side}] SIM MODE: MuJoCo backend ({model_path}, render={render})")
+        else:
+            port = rospy.get_param("~com_port", None)  # None = auto-detect any port
+            self._link = RevoHandLink(side=side, port=port)
+            self._async.run_coro(self._link.connect(), timeout=10.0)
+            rospy.loginfo(f"[hand_{side}] connected to real Revo2 hand (port={port or 'auto-detected'})")
+
+        ns = f"hand_{side}"
+        self._services = []
+        for preset_name in self._presets:
+            srv = rospy.Service(f"/{ns}/{preset_name}", Trigger, self._make_handler(preset_name))
+            self._services.append(srv)
+
+        rospy.on_shutdown(self._shutdown)
+        rospy.loginfo(f"[hand_{side}] ready: {', '.join(self._presets.keys())}")
+
+    def _make_handler(self, preset_name: str):
+        pose = self._presets[preset_name]
+
+        def _handler(_req):
+            try:
+                self._async.run_coro(self._link.write_pose(pose), timeout=2.0)
+                settled = self._async.run_coro(
+                    self._link.wait_until_settled(pose), timeout=pose.settle_timeout_s + 1.0
+                )
+                if settled:
+                    return TriggerResponse(success=True, message=f"{preset_name} reached")
+                return TriggerResponse(
+                    success=True,
+                    message=f"{preset_name} commanded, did not confirm settle within timeout",
+                )
+            except (IOError, RuntimeError, TimeoutError, asyncio.TimeoutError) as exc:
+                rospy.logerr(f"hand {preset_name} failed: {exc}")
+                return TriggerResponse(success=False, message=str(exc))
+
+        return _handler
+
+    def _shutdown(self):
+        try:
+            self._async.run_coro(self._link.close(), timeout=1.0)
+        except Exception:
+            pass
+        self._async.stop()
+
+
+if __name__ == "__main__":
+    HandNode()
+    rospy.spin()
