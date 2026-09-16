@@ -101,7 +101,10 @@ source ~/Workspace/DIP/g1_ws/devel/setup.bash --extend
 roslaunch g1_slam slam_bringup.launch rviz:=true       # rviz:=false for headless
 ```
 Args: `robot_tf:=false` skips the TF nodes; `robot_state_publisher:=false` if
-another process already publishes the robot TF.
+another process already publishes the robot TF; `world_tf:=false` drops the
+static `world -> camera_init` (roll pi) frame that gives RViz a z-up view of
+the upside-down Mid-360's `camera_init`. RViz uses `slam/rviz/slam.rviz`
+(Fixed Frame `world`); override with `rviz_config:=<file>`.
 
 Terminal 3 (checks):
 ```bash

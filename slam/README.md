@@ -74,7 +74,10 @@ saved‑map navigation can work.
 `robot_tf:=false` (default `true`, skip `g1_tf.launch`),
 `robot_state_publisher:=false` (default `true`; set false if integration already
 runs one — two publishers would fight over `/tf`),
-`urdf_file:=<path>` (default the vendored `urdf/g1_23dof_mode_10.urdf`).
+`urdf_file:=<path>` (default the vendored `urdf/g1_23dof_mode_10.urdf`),
+`world_tf:=false` / `world_frame:=<name>` (default `true` / `world`; the static
+z‑up parent of `camera_init`, §3),
+`rviz_config:=<file>` (default `rviz/slam.rviz`, Fixed Frame `world`).
 
 ---
 
@@ -130,9 +133,10 @@ those belong to the navigation package. **`base_link` is deliberately absent**, 
 ## 3. TF tree
 
 ```
-camera_init                                  FAST-LIO2 odometry origin (world)
-├── body                                     /laserMapping        dynamic  /tf
-└── pelvis                                   /g1_tf_publisher     dynamic  /tf
+world                                        z-up view frame (slam_bringup.launch)
+└── camera_init                              /world_to_camera_init_tf  static  /tf_static
+    ├── body                                 /laserMapping        dynamic  /tf
+    └── pelvis                               /g1_tf_publisher     dynamic  /tf
     ├── pelvis_contour_link, imu_in_pelvis   robot_state_publisher  fixed
     ├── left|right_hip_pitch_link → … → ankles    rsp, revolute
     └── torso_link                           rsp, waist_yaw_joint (REVOLUTE)
@@ -144,11 +148,13 @@ base_link                                    NOT PUBLISHED — unresolved (§4)
 ```
 
 `camera_init` has two children and every other frame has exactly one parent, so
-the tree stays valid.
+the tree stays valid. (The robot subtree is drawn one level shallower above for
+brevity; it hangs off `camera_init → pelvis`.)
 
 | Frame | Meaning | Source |
 | --- | --- | --- |
-| `camera_init` | FAST‑LIO2 odometry origin. Created at the IMU pose at the **first LiDAR frame** of the session (identity initial state). Fixed for the lifetime of that `laserMapping` process. | FAST‑LIO2 |
+| `world` | z‑up parent of `camera_init`: a **static roll of π**, nothing else. `camera_init` is the inverted Mid‑360 IMU frame, so its z axis points into the floor; `world` undoes that so RViz and downstream consumers get a right‑side‑up view. It is the same physical convention as the URDF's `mid360_joint` roll, **not** a calibration — the torso's lean at start‑up (measured ≈ 6° on one run) stays in `camera_init`. Disable with `world_tf:=false`, rename with `world_frame:=…`. Not a substitute for the `map → camera_init` relocalization of §7. | `slam_bringup.launch` (`tf2_ros static_transform_publisher`) |
+| `camera_init` | FAST‑LIO2 odometry origin. Created at the IMU pose at the **first LiDAR frame** of the session (identity initial state). Fixed for the lifetime of that `laserMapping` process. **All g1_slam outputs (`/Odometry`, clouds, saved maps) are expressed here**, i.e. z‑down, ~6° from gravity. | FAST‑LIO2 |
 | `body` | FAST‑LIO2's tracked pose = the Mid‑360 **IMU** frame. Moves with the robot. | FAST‑LIO2 (`camera_init → body`) |
 | `pelvis` | The official URDF root, and the frame g1_slam publishes. | `/g1_tf_publisher` (`camera_init → pelvis`) |
 | `torso_link` | G1 torso; carries the Mid‑360. Child of `pelvis` through **revolute** `waist_yaw_joint`. | `robot_state_publisher` |

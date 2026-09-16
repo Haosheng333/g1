@@ -19,12 +19,31 @@
        topic the TF node comes up, warns, and publishes nothing - this bring-up
        still runs, maps, and saves maps as normal.
 
+       camera_init is the Mid-360 IMU pose at the first LiDAR frame and is never
+       gravity-aligned. The Mid-360 is mounted upside down on the G1 torso
+       (urdf mid360_joint, roll = pi), so camera_init's z axis points INTO the
+       floor and everything expressed in it renders flipped. FAST-LIO2's
+       extrinsic_R must stay identity (it is the LiDAR-to-IMU relation inside
+       the housing), so the correction is a static parent frame instead:
+       world -> camera_init, roll = pi, published here. It is a fixed physical
+       convention, not a calibration: any residual tilt of the torso at start-up
+       (a few degrees) remains in camera_init and is a relocalization concern
+       (README section 7). All SLAM outputs stay in camera_init; world only adds
+       a z-up view for RViz and downstream consumers.
+
        RViz is disabled by default so this runs headless (container / robot).
        Neither included file starts RViz on its own; pass rviz:=true to bring up
-       FAST-LIO2's visualization. Note the vendored URDF has no meshes, so an
-       RViz RobotModel display would render no geometry (see urdf/SOURCE.md). -->
+       rviz/slam.rviz (FAST-LIO2's loam_livox layout with Fixed Frame: world).
+       Note the vendored URDF has no meshes, so an RViz RobotModel display would
+       render no geometry (see urdf/SOURCE.md). -->
 
   <arg name="rviz" default="false"/>
+  <arg name="rviz_config" default="$(find g1_slam)/rviz/slam.rviz"/>
+
+  <!-- z-up parent of camera_init. Set world_tf:=false if another node (e.g. a
+       relocalizer publishing map -> camera_init) owns camera_init's parent. -->
+  <arg name="world_tf" default="true"/>
+  <arg name="world_frame" default="world"/>
 
   <!-- Robot TF tree (robot_state_publisher + camera_init -> pelvis). -->
   <arg name="robot_tf" default="true"/>
@@ -45,10 +64,16 @@
     <arg name="robot_state_publisher" value="$(arg robot_state_publisher)"/>
   </include>
 
+  <!-- world -> camera_init: pure 180 deg roll for the inverted Mid-360 mount.
+       tf2 static_transform_publisher args: x y z yaw pitch roll parent child. -->
+  <node if="$(arg world_tf)" pkg="tf2_ros" type="static_transform_publisher"
+        name="world_to_camera_init_tf"
+        args="0 0 0 0 0 3.14159265 $(arg world_frame) camera_init"/>
+
   <!-- Optional visualization, off by default. -->
   <group if="$(arg rviz)">
     <node name="rviz" pkg="rviz" type="rviz"
-          args="-d $(find fast_lio)/rviz_cfg/loam_livox.rviz"
+          args="-d $(arg rviz_config)"
           output="screen"/>
   </group>
 </launch>
