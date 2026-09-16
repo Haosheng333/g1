@@ -37,6 +37,7 @@ this into hand_node.py's Trigger services.
 """
 
 import asyncio
+import inspect
 import time
 from typing import List, Optional
 
@@ -75,9 +76,12 @@ class RevoHandLink:
         self._slave_id = None
 
     async def connect(self):
+        # The compiled SDK returns an asyncio Future here (not a coroutine),
+        # so test for any awaitable rather than asyncio.iscoroutine().
         devices = stark.auto_detect(scan_all=True, port=self._port, protocol=None)
-        if asyncio.iscoroutine(devices):
+        if inspect.isawaitable(devices):
             devices = await devices
+        devices = list(devices or [])
 
         if not devices:
             raise RuntimeError(
