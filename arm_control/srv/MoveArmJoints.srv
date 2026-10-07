@@ -1,0 +1,6 @@
+string    arm                   # "left" or "right"
+float64[] path_flat              # N x 5 joint waypoints (rad), flattened
+float64   timeout_per_waypoint   # seconds; <= 0 means use the node's default
+---
+bool      success
+string    message                # failure reason, e.g. which waypoint timed out
