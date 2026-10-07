@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>arm_control</name>
+  <version>0.1.0</version>
+  <description>
+    Module 3 (execution): the 250 Hz arm control loop talking to the robot
+    over unitree_sdk2py (rt/lowstate / rt/arm_sdk), exposing
+    /arm/move_arm_joints so other packages can drive a waypoint path without
+    touching the DDS layer directly.
+  </description>
+
+  <maintainer email="huan0387@e.ntu.edu.sg">huangyiting</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>message_generation</build_depend>
+  <exec_depend>message_runtime</exec_depend>
+
+  <depend>rospy</depend>
+  <depend>std_msgs</depend>
+
+  <export>
+    <catkin_python_setup />
+  </export>
+</package>
