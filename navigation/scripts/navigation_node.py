@@ -13,6 +13,10 @@ class NavigationNode:
     def __init__(self):
         rospy.init_node('navigation_node', anonymous=True)
 
+        # Configurable frame alignment matching g1_slam contract
+        self.global_frame = rospy.get_param('~global_frame', 'camera_init')
+        self.robot_base_frame = rospy.get_param('~robot_frame', 'pelvis')
+
         self.costmap = OccupancyCostmap()
         self.planner = AStarPlanner()
         self.controller = PurePursuitController()
@@ -27,7 +31,7 @@ class NavigationNode:
         self.cmd_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
         self.path_pub = rospy.Publisher('/custom_global_path', Path, queue_size=1)
 
-        rospy.loginfo("[navigation_node] Custom algorithm node initialized successfully.")
+        rospy.loginfo(f"[navigation_node] Initialized with target frames: {self.global_frame} -> {self.robot_base_frame}")
 
     def map_callback(self, msg):
         self.costmap.update_map(msg)
@@ -39,16 +43,21 @@ class NavigationNode:
 
     def get_robot_pose(self):
         try:
-            (trans, rot) = self.tf_listener.lookupTransform('/map', '/base_link', rospy.Time(0))
+            (trans, rot) = self.tf_listener.lookupTransform(self.global_frame, self.robot_base_frame, rospy.Time(0))
             roll, pitch, yaw = tf.transformations.euler_from_quaternion(rot)
             return (trans[0], trans[1], yaw)
         except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
+            rospy.logwarn_throttle(5.0, f"[navigation_node] Waiting for TF ({self.global_frame} -> {self.robot_base_frame}). Ensure /joint_states carries waist_yaw_joint.")
             return None
 
     def replan(self):
         robot_pose = self.get_robot_pose()
-        if robot_pose is None or self.goal_pose is None:
-            rospy.logwarn("[navigation_node] Cannot plan: Missing valid robot pose or goal.")
+        if robot_pose is None:
+            rospy.logwarn("[navigation_node] Cannot plan: Missing valid robot pose.")
+            return
+
+        if self.goal_pose is None:
+            rospy.logwarn("[navigation_node] Cannot plan: Missing goal pose.")
             return
 
         if self.costmap.grid is None:
@@ -64,7 +73,7 @@ class NavigationNode:
 
     def publish_path(self):
         path_msg = Path()
-        path_msg.header.frame_id = "map"
+        path_msg.header.frame_id = self.global_frame
         path_msg.header.stamp = rospy.Time.now()
 
         for x, y in self.current_path:
