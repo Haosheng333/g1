@@ -12,7 +12,11 @@
     <!-- Hardware Joint State Bridge Node (§4a interface compliance) -->
     <node pkg="g1_navigation" type="g1_joint_state_bridge.py" name="g1_joint_state_bridge" output="screen" />
 
-    <!-- Core Navigation Node (§4b pelvis root frame alignment) -->
+    <!-- Static TF bridge from pelvis to base_link for perception compatibility (§4b) -->
+    <node pkg="tf2_ros" type="static_transform_publisher" name="pelvis_to_base_link_broadcaster" 
+          args="0 0 0 0 0 0 pelvis base_link" />
+
+    <!-- Core Navigation Node -->
     <node pkg="g1_navigation" type="navigation_node.py" name="navigation_node" output="screen">
         <param name="global_frame" value="$(arg global_frame)" />
         <param name="robot_frame" value="$(arg robot_frame)" />
