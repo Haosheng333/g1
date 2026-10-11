@@ -1,0 +1,50 @@
+<launch>
+  <!-- NAVIGATION STACK ON THE REAL ROBOT (everything the navigation module needs, in dependency order):
+
+       1. g1_joint_state_bridge   REAL /joint_states (waist_yaw_joint!)  -> TF camera_init->pelvis is right
+       2. g1_slam localization    sensors + FAST-LIO2 + g1_tf + relocalizer + grid_composer
+                                  TF chain  map -> camera_init -> pelvis   (map is z-UP)
+       3. pelvis -> base_link     identity alias for perception / arm code that speaks `base_link`
+       4. g1_navigation           obstacle_cloud + navigation_node + cmd_vel_gate
+
+       roslaunch system_bringup navigation.launch map_name:=lab joint_mode:=relay joint_input_topic:=/arm/joint_states
+       roslaunch system_bringup navigation.launch map_name:=lab joint_mode:=dds network_interface:=enp2s0
+       roslaunch system_bringup navigation.launch map_name:=lab joint_mode:=fake allow_fake_zeros:=true   (BENCH ONLY)
+
+       Motion stays DISABLED until:  rosservice call /navigation/enable_motion "data: true"
+
+       base_link: OFF by default.  slam_health_check.py (component tf) FAILs as soon as `base_link` exists in the
+       TF tree (slam/README section 4b: unresolved).  Pass with_base_link:=true only when perception/arm code
+       needs it, and update that health check at the same time.  When on, it is an identity child of pelvis,
+       published HERE and nowhere in g1_slam.
+  -->
+  <arg name="map_name" default="current"/>
+  <arg name="rviz" default="false"/>
+  <arg name="motion_enabled" default="false"/>
+  <arg name="with_base_link" default="false"/>
+
+  <arg name="joint_mode" default="relay"/>                 <!-- relay | dds | fake -->
+  <arg name="joint_input_topic" default=""/>               <!-- required for relay -->
+  <arg name="network_interface" default=""/>               <!-- dds: e.g. enp2s0 -->
+  <arg name="allow_fake_zeros" default="false"/>           <!-- fake: bench only -->
+
+  <node pkg="g1_navigation" type="g1_joint_state_bridge.py" name="g1_joint_state_bridge" output="screen">
+    <param name="mode" value="$(arg joint_mode)"/>
+    <param name="input_topic" value="$(arg joint_input_topic)"/>
+    <param name="network_interface" value="$(arg network_interface)"/>
+    <param name="allow_fake_zeros" type="bool" value="$(arg allow_fake_zeros)"/>
+  </node>
+
+  <include file="$(find g1_slam)/launch/localization.launch">
+    <arg name="map_name" value="$(arg map_name)"/>
+    <arg name="rviz" value="$(arg rviz)"/>
+  </include>
+
+  <node if="$(arg with_base_link)" pkg="tf2_ros" type="static_transform_publisher" name="pelvis_to_base_link"
+        args="0 0 0 0 0 0 pelvis base_link"/>
+
+  <include file="$(find g1_navigation)/launch/navigation.launch">
+    <arg name="map_name" value="$(arg map_name)"/>
+    <arg name="motion_enabled" value="$(arg motion_enabled)"/>
+  </include>
+</launch>

@@ -1,29 +1,79 @@
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded: ~
+    Splitter Ratio: 0.5
+  - Class: rviz/Views
+    Name: Views
 Visualization Manager:
   Class: ""
   Displays:
     - Class: rviz/Grid
       Name: Grid
       Enabled: true
+      Plane: XY
+      Cell Count: 20
+      Color: 160; 160; 164
     - Class: rviz/Map
-      Name: Map
+      Name: Map (tiers from grid_composer)
+      Enabled: true
       Topic: /map
+      Alpha: 0.7
+      Color Scheme: map
+    - Class: rviz/Map
+      Name: Costmap (navigation)
+      Enabled: false
+      Topic: /navigation/costmap
+      Alpha: 0.6
+      Color Scheme: costmap
+    - Class: rviz/PointCloud2
+      Name: Obstacle cloud (live layer)
       Enabled: true
-    - Class: rviz/RobotModel
-      Name: RobotModel
-      Enabled: false
-    - Class: rviz/PoseArray
-      Name: AMCL Particles
-      Topic: /particlecloud
-      Enabled: false
+      Topic: /obstacle_cloud
+      Size (m): 0.06
+      Style: Flat Squares
+      Color: 255; 0; 0
+      Color Transformer: FlatColor
     - Class: rviz/Path
-      Name: Global Plan
-      Topic: /move_base/NavfnROS/plan
+      Name: Global path
       Enabled: true
+      Topic: /navigation/global_path
+      Color: 25; 255; 0
+      Line Style: Lines
+    - Class: rviz/Path
+      Name: Local plan (DWA)
+      Enabled: true
+      Topic: /navigation/local_path
+      Color: 255; 170; 0
+      Line Style: Lines
+    - Class: rviz/TF
+      Name: TF
+      Enabled: true
+      Show Names: true
+      Show Axes: true
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: map
+    Frame Rate: 30
+  Name: root
   Tools:
-    - Class: rviz/Interact
     - Class: rviz/MoveCamera
     - Class: rviz/Select
     - Class: rviz/SetInitialPose
+      Topic: /initialpose
     - Class: rviz/SetGoal
-  Global Options:
-    Fixed Frame: map
+      Topic: /move_base_simple/goal
+  Value: true
+  Views:
+    Current:
+      Class: rviz/TopDownOrtho
+      Name: Current View
+      Scale: 40
+      X: 5
+      Y: 4
+    Saved: ~
+Window Geometry:
+  Height: 900
+  Width: 1400

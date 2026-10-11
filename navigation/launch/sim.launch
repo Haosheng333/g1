@@ -1,0 +1,35 @@
+<launch>
+  <!-- NAVIGATION SIMULATOR: no robot, no lidar, no SLAM needed.
+       roslaunch g1_navigation sim.launch                (rviz opens; use "2D Nav Goal")
+       rosservice call /navigation/navigate "{class_name: 'table', approach_distance: 0.6}"
+       rosservice call /sim/toggle_obstacle "{}"         (box appears in the way -> re-plan)
+       python3 tools/nav_acceptance_test.py              (automated acceptance run)
+
+       It runs the REAL grid_composer, navigation_node, cmd_vel_gate; only the robot, the pelvis TF,
+       the localization flag and /obstacle_cloud are simulated (sim_world.py). -->
+  <arg name="rviz" default="true"/>
+  <arg name="map_name" default="sim_room"/>
+  <arg name="maps_dir" default="$(find g1_navigation)/sim"/>
+  <arg name="start" default="[1.0, 1.0, 0.0]"/>
+  <arg name="localized_delay" default="5.0"/>
+
+  <node pkg="g1_slam" type="grid_composer.py" name="grid_composer" output="screen">
+    <param name="map_yaml" value="$(arg maps_dir)/$(arg map_name)/map.yaml"/>
+    <param name="frame_id" value="map"/>
+  </node>
+
+  <node pkg="g1_navigation" type="sim_world.py" name="sim_world" output="screen">
+    <param name="map_yaml" value="$(arg maps_dir)/$(arg map_name)/map.yaml"/>
+    <rosparam param="start" subst_value="true">$(arg start)</rosparam>
+    <param name="localized_delay" value="$(arg localized_delay)"/>
+  </node>
+
+  <include file="$(find g1_navigation)/launch/navigation.launch">
+    <arg name="map_name" value="$(arg map_name)"/>
+    <arg name="maps_dir" value="$(arg maps_dir)"/>
+    <arg name="motion_enabled" value="true"/>
+    <arg name="obstacle_cloud" value="false"/>
+  </include>
+
+  <include file="$(find g1_navigation)/launch/nav_rviz.launch" if="$(arg rviz)"/>
+</launch>

@@ -1,0 +1,20 @@
+--- a/g1_ws/README.md
++++ b/g1_ws/README.md
+@@ -1,12 +1,14 @@
+-# g1_ws - catkin workspace for this repo's SLAM stack
++# g1_ws - catkin workspace for this repo's SLAM + navigation stack
+ 
+-Builds `slam/` (package `g1_slam`, FAST-LIO2 based) together with its two
+-external dependencies. Kept separate from `~/g1_intellect/catkin_ws`, which
++Builds `slam/` (package `g1_slam`, FAST-LIO2 based), `navigation/` (`g1_navigation`) and
++`system_bringup/` together with the two external dependencies. Kept separate from `~/g1_intellect/catkin_ws`, which
+ contains a *different* package also named `g1_slam`.
+ 
+ ## Layout
+ 
+     src/g1_slam            -> ../../slam                     (relative symlink, tracked)
++    src/g1_navigation      -> ../../navigation               (relative symlink, tracked)
++    src/system_bringup     -> ../../system_bringup           (relative symlink, tracked)
+     src/livox_ros_driver2  -> ~/g1_intellect/external/livox_ros_driver2   (symlink, tracked)
+     src/fast_lio           external clone, NOT tracked (ignored via .gitignore)
+ 
