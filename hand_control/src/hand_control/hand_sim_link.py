@@ -2,7 +2,8 @@
 hand_sim_link.py — MuJoCo stand-in for RevoHandLink.
 
 Same interface as revo_hand_link.RevoHandLink: connect / close / write_pose /
-read_positions / wait_until_settled. hand_node.py picks whichever backend
+read_positions / wait_until_settled.  Position convention is identical to the real
+hand: 0 = open, 1000 = closed. hand_node.py picks whichever backend
 based on the ~sim param; nothing else about the node changes.
 
 Works with either the placeholder 5-finger model or the real Revo2 URDF-
@@ -25,7 +26,7 @@ PLACEHOLDER_JOINTS = [f"finger{i}_joint" for i in range(5)]
 PLACEHOLDER_ACTUATORS = [f"finger{i}_act" for i in range(5)]
 
 # --- Real Revo2 URDF-derived model (config/revo2_hand_real/{side}_hand.xml) ---
-# Order matches finger_presets.yaml's 6-value convention:
+# Order matches finger_presets.yaml's 6-value order:
 # [thumb_metacarpal(rotation), thumb_proximal(flex), index, middle, ring, pinky]
 def real_hand_joint_names(side: str) -> List[str]:
     return [
@@ -194,12 +195,12 @@ class RevoHandSimLink:
     def _raw_to_angle(raw: int, joint_range) -> float:
         lo, hi = joint_range
         raw = max(0, min(1000, raw))
-        # raw=1000 -> lo (open), raw=0 -> hi (closed) -- matches finger_presets.yaml convention
-        return hi - (hi - lo) * (raw / 1000.0)
+        # raw=0 -> lo (open), raw=1000 -> hi (closed) -- SDK-native, matches finger_presets.yaml
+        return lo + (hi - lo) * (raw / 1000.0)
 
     @staticmethod
     def _angle_to_raw(angle: float, joint_range) -> int:
         lo, hi = joint_range
         angle = max(lo, min(hi, angle))
-        return int(round(1000 * (hi - angle) / (hi - lo))) if hi > lo else 0
+        return int(round(1000 * (angle - lo) / (hi - lo))) if hi > lo else 0
 

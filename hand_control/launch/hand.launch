@@ -1,0 +1,19 @@
+<launch>
+  <!-- Launch files WIN over code defaults. Check live values with:  rosparam get /hand_left/com_port -->
+  <arg name="side"        default="left"/>     <!-- left | right -->
+  <arg name="sim"         default="false"/>    <!-- true = MuJoCo instead of the real hand -->
+  <arg name="render"      default="true"/>     <!-- sim only: open the viewer -->
+  <arg name="with_bottle" default="false"/>    <!-- sim only: load the scene that contains a bottle -->
+  <arg name="com_port"    default=""/>         <!-- e.g. /dev/ttyUSB0 ; empty = auto-detect -->
+
+  <node pkg="hand_control" type="hand_node.py" name="hand_$(arg side)" output="screen" required="true">
+    <param name="side"          value="$(arg side)"/>
+    <param name="sim"           value="$(arg sim)"/>
+    <param name="render"        value="$(arg render)"/>
+    <param name="with_bottle"   value="$(arg with_bottle)"/>
+    <param name="com_port"      value="$(arg com_port)"/>
+    <param name="presets_yaml"  value="$(find hand_control)/config/finger_presets.yaml"/>
+    <param name="reconnect_on_error" value="true"/>
+    <param name="connect_retries"    value="3"/>
+  </node>
+</launch>
