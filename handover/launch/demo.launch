@@ -1,0 +1,6 @@
+<launch>
+<!-- MOCK ONLY. Do not launch alongside hardware services. -->
+<node pkg="handover" type="mock_dependencies.py" name="handover_mock_dependencies" output="screen"/>
+<node pkg="handover" type="auto_release_monitor.py" name="auto_release_monitor" output="screen"/>
+<node pkg="handover" type="handover_node.py" name="handover_node" output="screen"><rosparam param="target">[0.25, -0.15, 0.15]</rosparam></node>
+</launch>

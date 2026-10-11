@@ -1,0 +1,6 @@
+<launch>
+<!-- Required: reviewed target YAML; real tactile and planning adapters running. -->
+<arg name="config"/>
+<node pkg="handover" type="auto_release_monitor.py" name="auto_release_monitor" output="screen"><rosparam command="load" file="$(arg config)"/></node>
+<node pkg="handover" type="handover_node.py" name="handover_node" output="screen"><rosparam command="load" file="$(arg config)"/></node>
+</launch>

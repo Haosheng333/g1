@@ -1,0 +1,12 @@
+# Integration contract: planner must collision-check every leg before motion.
+string arm
+float64 x
+float64 y
+float64 z
+---
+bool success
+string message
+float64[] staging_path_flat
+float64[] reach_path_flat
+float64[] retract_path_flat
+float64[] home_path_flat
