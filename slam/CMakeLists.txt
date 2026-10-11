@@ -7,14 +7,17 @@ find_package(catkin REQUIRED COMPONENTS
   roslaunch
   sensor_msgs
   nav_msgs
+  std_msgs
+  std_srvs
+  geometry_msgs
 )
 
 # libpcl-dev / pcl_ros provide these; used only by the offline pcd_to_map tool.
 find_package(PCL REQUIRED COMPONENTS common io)
 
 # Installs the g1_slam Python package from src/g1_slam (see setup.py) so that
-# nodes and tests can `import g1_slam.tf_chain`. MUST come before
-# catkin_package().
+# nodes and tests can `import g1_slam.tf_chain` / `g1_slam.cloud_utils`.
+# MUST come before catkin_package().
 catkin_python_setup()
 
 catkin_package()
@@ -23,6 +26,9 @@ catkin_install_python(PROGRAMS
   scripts/slam_health_check.py
   scripts/save_map.py
   scripts/g1_tf_publisher.py
+  scripts/slam_manager.py
+  scripts/relocalizer.py
+  scripts/grid_composer.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

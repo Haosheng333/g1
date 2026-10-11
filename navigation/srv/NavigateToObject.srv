@@ -1,0 +1,10 @@
+# /navigation/navigate  (doc section 4.3)
+# Semantic goal: "stand approach_distance metres in front of the named object".
+# class_name must exist in slam/maps/<map>/semantic.yaml (case-insensitive).
+# The call returns immediately once the goal is ACCEPTED; progress is reported
+# on /navigation/status (PLANNING / FOLLOWING / RECOVERING / SUCCESS / FAILURE).
+string class_name
+float32 approach_distance
+---
+bool success
+string message

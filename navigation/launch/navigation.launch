@@ -1,0 +1,42 @@
+<launch>
+  <!-- ONLINE NAVIGATION (doc 4.3). Start AFTER g1_slam localization.launch
+       (which provides /map, TF map->camera_init and /slam/manager/state).
+
+       roslaunch g1_navigation navigation.launch map_name:=lab
+       roslaunch g1_navigation navigation.launch map_name:=lab motion_enabled:=true
+
+       Goals:  rviz "2D Nav Goal" (Fixed Frame = map)  or
+               rosservice call /navigation/navigate "{class_name: 'table', approach_distance: 0.6}"
+       Status: rostopic echo /navigation/status
+       Motion: rosservice call /navigation/enable_motion "data: true"
+
+       Launch-file values win over code defaults (doc section 7): check live
+       values with `rosparam get /navigation_node`.
+  -->
+  <arg name="map_name" default="current"/>
+  <arg name="maps_dir" default="$(find g1_slam)/maps"/>
+  <arg name="semantic_file" default="$(arg maps_dir)/$(arg map_name)/semantic.yaml"/>
+  <arg name="global_frame" default="map"/>
+  <arg name="robot_frame" default="pelvis"/>
+  <arg name="use_localization_gate" default="true"/>
+  <arg name="motion_enabled" default="false"/>
+
+  <node pkg="g1_navigation" type="navigation_node.py" name="navigation_node" output="screen">
+    <param name="global_frame" value="$(arg global_frame)"/>
+    <param name="robot_frame" value="$(arg robot_frame)"/>
+    <param name="semantic_file" value="$(arg semantic_file)"/>
+    <param name="use_localization_gate" type="bool" value="$(arg use_localization_gate)"/>
+    <param name="still_time" value="3.0"/>
+    <param name="sweep_amplitude" value="0.52"/>
+    <param name="sweep_speed" value="0.4"/>
+    <param name="gate_timeout" value="60.0"/>
+    <param name="default_approach_distance" value="0.6"/>
+    <param name="inflation_cells" value="0"/>
+  </node>
+
+  <node pkg="g1_navigation" type="cmd_vel_gate.py" name="cmd_vel_gate" output="screen">
+    <param name="enabled" type="bool" value="$(arg motion_enabled)"/>
+    <param name="in_topic" value="/navigation/cmd_vel"/>
+    <param name="out_topic" value="/locomotion/cmd_vel"/>
+  </node>
+</launch>
