@@ -1,0 +1,8 @@
+# Real hand (required):
+bc-stark-sdk
+# ROS Noetic = Python 3.8. bc-stark-sdk 2.x wheels need Python >= 3.9, so on Noetic use the 1.x line:
+#   pip3 install "bc-stark-sdk<2"
+# and verify the API names exist (see README, step 3).
+pyyaml
+# Simulation only (optional):
+# mujoco
