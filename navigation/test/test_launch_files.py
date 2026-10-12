@@ -1,4 +1,4 @@
-"""Static checks of every launch file of the three ROS packages (no ROS needed).
+"""Static checks of every launch file in this repository (no ROS needed).
 
     cd navigation/test && python3 -m unittest test_launch_files -v
 
@@ -14,10 +14,23 @@ import unittest
 import xml.etree.ElementTree as ET
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
-PKGS = {"g1_slam": "slam", "g1_navigation": "navigation", "system_bringup": "system_bringup"}
-LAUNCHES = sorted(glob.glob(os.path.join(REPO, "slam", "launch", "*.launch")) +
-                  glob.glob(os.path.join(REPO, "navigation", "launch", "*.launch")) +
-                  glob.glob(os.path.join(REPO, "system_bringup", "launch", "*.launch")))
+# ROS package name -> directory. Two packages are named differently from their
+# directory (g1_slam/slam, g1_navigation/navigation); the rest match.
+PKGS = {
+    "g1_slam": "slam",
+    "g1_navigation": "navigation",
+    "system_bringup": "system_bringup",
+    "perception": "perception",
+    "arm_planning": "arm_planning",
+    "arm_control": "arm_control",
+    "hand_control": "hand_control",
+    "handover": "handover",
+    "orchestrator": "orchestrator",
+}
+LAUNCHES = sorted(
+    lf for d in sorted(set(PKGS.values()))
+    for lf in glob.glob(os.path.join(REPO, d, "launch", "*.launch"))
+)
 
 
 def _pkg_path(pkg, rel=""):
