@@ -1,0 +1,26 @@
+# /arm/plan_grasp_from_point  --  Module 2 segmented grasp planning (doc 6, 13.3).
+#
+# PLANNING ONLY. Returns four segments and never moves anything. The gripper
+# open/close points sit BETWEEN segments and belong to the orchestrator
+# (doc 6.1): to_pregrasp -> open -> approach -> close -> lift -> retract.
+#
+# FRAME: object_xyz is in torso_link (doc sections 2.3 and 13.4). No frame
+# conversion is performed here; see PlanToPose.srv.
+#
+# JOINT ORDER (doc 2.3): shoulder_pitch, shoulder_roll, shoulder_yaw, elbow,
+# wrist_roll.
+string    arm                        # "left" or "right"
+float64[] current_joints             # exactly 5 finite measured joint angles (rad)
+float64[] object_xyz                 # exactly 3: [x, y, z] in metres
+---
+bool      success                    # true only when all four segments planned (doc 6)
+string    message                    # success or human-readable failure reason
+string[]  joint_names                # ordered 5 joint names for the selected arm
+string[]  segment_names              # to_pregrasp, approach, lift, retract (in order)
+int32[]   segment_waypoint_counts    # per-segment N, same order as segment_names
+float64[] flattened_segment_paths    # concatenated N x 5 blocks (doc 11.4); empty on failure
+float64[] final_joints               # joints at the end of retract; empty on failure
+float64[] pregrasp_pose              # selected staging pose [x,y,z,rx,rz]
+float64[] grasp_pose                 # fixed grasp pose
+float64[] lift_pose
+float64[] retract_pose               # selected staging pose

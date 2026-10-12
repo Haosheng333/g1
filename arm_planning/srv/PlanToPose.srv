@@ -1,0 +1,27 @@
+# /arm/plan_to_pose  --  Module 2 point-to-pose planning (doc section 5, 13.2).
+#
+# PLANNING ONLY. This service never commands the robot; it returns a path and
+# nothing else. Execution is /arm/move_arm_joints (package arm_control).
+#
+# FRAME: target_pose is in torso_link (doc sections 2.3 and 13.4). The caller
+# is responsible for supplying torso_link coordinates. This node performs NO
+# frame conversion -- the pelvis/base_link -> torso_link transform is an
+# unresolved integration decision and is deliberately not implemented here.
+#
+# JOINT ORDER (doc section 2.3), for current_joints and every returned path:
+#   shoulder_pitch, shoulder_roll, shoulder_yaw, elbow, wrist_roll
+string    arm                      # "left" or "right"
+float64[] current_joints           # exactly 5 finite measured joint angles (rad)
+float64[] target_pose              # exactly 5: [x, y, z, rx, rz]; m and rad
+---
+bool      success                  # true only after IK + planning + dense validation (doc 5.2)
+string    message                  # success or human-readable failure reason
+string[]  joint_names              # ordered 5 joint names for the selected arm
+int32     waypoint_count           # N; number of rows in flattened_joint_path
+float64[] flattened_joint_path     # N x 5 row-major (doc 11.4); EMPTY when success=false
+float64[] verified_goal_joints     # FK-verified exact IK solution; empty on failure
+float64   position_error_m         # runtime verification; NaN when not measured
+float64   rx_error_rad             # NaN when not measured
+float64   rz_error_rad             # NaN when not measured
+int32     nodes_expanded           # A* diagnostic; 0 on failure
+bool      exact_goal_cell_blocked  # whether the rounded goal cell was blocked
