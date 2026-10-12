@@ -3,7 +3,7 @@
 #   docker/g1.sh enter 'bash ~/Workspace/DIP/tools/cd_preflight.sh'
 # Part 1: static checks (build, packages, launch files, removed files, unit tests).
 # Part 2: a HEADLESS SIMULATION of the whole navigation stack + the acceptance test (sim_world replaces the robot).
-REPO=~/Workspace/DIP
+REPO=${REPO:-~/Workspace/DIP}
 source "$REPO/g1_ws/devel/setup.bash" --extend 2>/dev/null
 FAILED=0
 ok()  { echo "[PASS] $1"; }
@@ -11,7 +11,9 @@ bad() { echo "[FAIL] $1  -- $2"; FAILED=1; }
 run() { local n="$1"; shift; local o; if o=$("$@" 2>&1); then ok "$n"; else bad "$n" "$(echo "$o" | tail -3 | tr '\n' ' ')"; fi; }
 
 echo "== part 1: static"
-run "rospack finds g1_slam g1_navigation system_bringup" rospack find g1_slam g1_navigation system_bringup
+run "rospack finds g1_slam"        rospack find g1_slam
+run "rospack finds g1_navigation" rospack find g1_navigation
+run "rospack finds system_bringup" rospack find system_bringup
 run "python libs (numpy scipy yaml)"                    python3 -c "import numpy, scipy, yaml"
 for f in navigation/scripts/navigation_node.py navigation/scripts/obstacle_cloud_node.py navigation/scripts/sim_world.py \
          navigation/scripts/g1_joint_state_bridge.py navigation/scripts/cmd_vel_gate.py tools/nav_acceptance_test.py; do
