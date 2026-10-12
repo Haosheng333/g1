@@ -1,0 +1,29 @@
+# Loaded by launch/localization.launch into the relocalizer node's private namespace.
+# Tune only with evidence (doc section 7).
+match_voxel: 0.25          # downsample for matching [m]
+scan_voxel: 0.15           # per-scan downsample [m]
+accumulate_scans: 40       # live scans kept (~4 s at 10 Hz)
+min_scans: 15
+min_points: 1500
+attempt_period: 2.0        # s between attempts
+
+# coarse global search (only used when no rviz seed matches)
+yaw_step_deg: 15.0
+trans_range: 4.0           # +-m around centroid alignment
+trans_step: 1.0
+top_k: 8
+
+# acceptance
+min_fitness: 0.60          # fraction of live points within final_inlier_dist of the map
+max_rmse: 0.20
+final_inlier_dist: 0.30
+ambiguity_margin: 0.03     # best pose must beat best DISTINCT alternative by this
+confirm_count: 2           # same pose on N attempts in a row
+confirm_pos: 0.25
+confirm_yaw: 0.15
+
+tf_rate: 10.0
+map_frame: map
+odom_frame: camera_init
+robot_frame: pelvis
+map_to_saved_rpy: [3.14159265, 0.0, 0.0]   # map(z-up) <- saved camera_init(z-down): roll pi

@@ -126,7 +126,7 @@ approximate and follow the LiDAR frame rate (~10 Hz for the Mid‑360 default).
 g1_slam subscribes to it and never synthesizes it.
 
 g1_slam does **not** publish `/cmd_vel`, costmaps, plans, goals, or `base_link` —
-those belong to the navigation package. **`base_link` is deliberately absent**, see §4.
+those belong to the navigation package. **`base_link` is never published by g1_slam**; navigation can add an optional identity alias, see §4b.
 
 ---
 
@@ -144,7 +144,8 @@ world                                        z-up view frame (slam_bringup.launc
         ├── head_link / logo_link / d435_link / imu_in_torso    rsp, fixed
         └── left|right_shoulder_* → … → wrists                  rsp, revolute
 
-base_link                                    NOT PUBLISHED — unresolved (§4)
+base_link                                    OPTIONAL identity alias of pelvis, published by system_bringup
+                                             only with `with_base_link:=true` (off by default, §4b)
 ```
 
 `camera_init` has two children and every other frame has exactly one parent, so
@@ -159,7 +160,7 @@ brevity; it hangs off `camera_init → pelvis`.)
 | `pelvis` | The official URDF root, and the frame g1_slam publishes. | `/g1_tf_publisher` (`camera_init → pelvis`) |
 | `torso_link` | G1 torso; carries the Mid‑360. Child of `pelvis` through **revolute** `waist_yaw_joint`. | `robot_state_publisher` |
 | `mid360_link` | The Mid‑360 **LiDAR** frame, per the URDF. Fixed to `torso_link`; the `rpy` roll of π is the **upside‑down mount**. | `robot_state_publisher` |
-| `base_link` | **Not published.** An unresolved integration decision — see §4. | — |
+| `base_link` | **Not published by g1_slam.** Optional identity alias of `pelvis` (`with_base_link:=true` in `system_bringup/launch/navigation.launch`, default off) — see §4b. | `system_bringup` (optional) |
 
 ### The chain, and the one transform deliberately not broadcast
 
@@ -197,10 +198,10 @@ meshes are not vendored, so RViz renders no robot geometry.
 
 ---
 
-## 4. What is still missing: `/joint_states` and `base_link`
+## 4. External inputs: `/joint_states` and the `base_link` decision
 
-Two things block a complete `camera_init → … → robot` chain. Neither is g1_slam's
-to fix, and neither is faked here.
+A complete `map → camera_init → pelvis` chain needs one external input (`/joint_states`, §4a) and one
+naming decision (`base_link`, §4b, now settled). Neither is faked here.
 
 ### 4a. `/joint_states` carrying `waist_yaw_joint` — EXTERNAL
 
@@ -239,25 +240,21 @@ Required interface:
 `slam_health_check.py --component tf` reports **WAIT** while it is absent, never
 FAIL — its absence is a pending integration step, not a defect.
 
-### 4b. `pelvis → base_link` — UNRESOLVED with the navigation team
+### 4b. `pelvis → base_link` — settled: optional alias, owned by `system_bringup`
 
-`pelvis` is the official URDF root and the frame this package publishes. Whether
-navigation wants `base_link` as an alias of `pelvis`, as a ground‑projected frame
-beneath it, or under a different name entirely is **their decision, and it has not
-been made.**
+Navigation works entirely in `map` and `pelvis` (`navigation.yaml: robot_frame: pelvis`), so it does **not**
+need `base_link`. For perception/arm code that speaks `base_link`, `system_bringup/launch/navigation.launch`
+can publish an **identity** `pelvis → base_link` (`with_base_link:=true`). It is **off by default** because
+`slam_health_check.py --component tf` FAILs as soon as `base_link` exists in the TF tree; switch it on only
+together with an agreed update of that check. g1_slam itself never publishes it:
+`config/g1_tf.yaml` keeps `base_link_alias: ""` (the node rejects any other value) and
+`test/test_tf_transforms.py` asserts `base_link` appears nowhere in the URDF.
 
-Nothing here invents it. `config/g1_tf.yaml` carries `base_link_alias: ""` purely
-as a documented placeholder; `""` is the only supported value, and the node
-**rejects a non-empty value outright** rather than publishing a guessed transform.
-`test/test_tf_transforms.py` asserts `base_link` appears nowhere in the URDF, and
-the health check FAILs if it ever shows up in the TF tree.
+`perception/` documents its results in `base_link`; whoever launches perception must either pass
+`with_base_link:=true` or transform from `pelvis`.
 
-This decision also affects `perception/`, which already documents its results as
-being expressed in `base_link` (`perception/README.md`), so that team should be in
-the conversation.
-
-Until 4a and 4b are both settled, **navigation cannot place the robot in a map.**
-
+Navigation needs 4a, and nothing else, to place the robot in a saved map: with a real `/joint_states` the chain
+`map → camera_init → pelvis` is complete once the relocalizer has localized (§7).
 
 ---
 
@@ -330,61 +327,40 @@ Publishes latched `/map` + `/map_metadata` and the `/static_map` service. Does
 
 ---
 
-## 6. Same‑session navigation interface
+## 6. Navigation interface (saved-map, `map` frame)
 
-"Same‑session" = navigation runs **inside the same `laserMapping` process** that
-is doing the mapping. This is the only configuration g1_slam currently supports
-end‑to‑end.
+Navigation (`g1_navigation`) runs against a **saved** map and the live relocalizer, not inside a
+single mapping session:
 
-- **Navigation frame:** `camera_init`. For a single FAST‑LIO2 run it is stable
-  and drift‑bounded (LIO is locally consistent; there is no loop closure), so
-  treat `map ≡ odom ≡ camera_init`. No AMCL, no separate localization node.
-- **Robot pose:** TF `camera_init → pelvis` (available once §4a is done), or
-  `/Odometry` (`camera_init → body`) composed with `body → pelvis` from
-  `src/g1_slam/tf_chain.py`. `base_link` is not published (§4b).
-- **Odometry topic:** `/Odometry` (`nav_msgs/Odometry`). Its `child_frame_id` is
-  `body`, not `pelvis`.
-- **Obstacle input for costmaps:** `/cloud_registered` (world, `camera_init`) or
-  `/cloud_registered_body` (sensor, `body`). There is **no `sensor_msgs/LaserScan`** —
-  a consumer needs a 3D costmap layer or its own `pointcloud_to_laserscan`.
-- **2D map (optional):** generate it from **this session's** run via §5, then
-  `map_server.launch` with `frame_id:=camera_init`.
-- **Suggested `move_base` wiring:** `global_frame: camera_init`,
-  `robot_base_frame: pelvis`, `odom_topic: /Odometry` — revisit `robot_base_frame`
-  once §4b is decided.
+- **Navigation frame:** `map` (z-UP, the saved map). Chain `map → camera_init → pelvis`; the relocalizer
+  publishes `map → camera_init`, `g1_tf_publisher` publishes `camera_init → pelvis`. Navigation never works in
+  `camera_init` (z-DOWN).
+- **Map:** `grid_composer` publishes the tiered `/map` (`-1` unknown, `0` walkable, `33` risk, `66` danger,
+  `100` obstacle) from `slam/maps/<name>/map.yaml`.
+- **Localization gate:** latched `/slam/manager/state` (`Bool`, True = localized). Navigation refuses to plan until True.
+- **Obstacles:** `g1_navigation/obstacle_cloud_node.py` turns `/cloud_registered` (`camera_init`) into the live
+  `/obstacle_cloud` in `map`, using `floor_z_camera_init` from `<map>/manifest.yaml`. There is no `LaserScan`.
+- **Goals:** `/navigation/navigate` (`NavigateToObject`, names from `<map>/semantic.yaml`), or `/move_base_simple/goal`
+  (rviz 2D Nav Goal, topic name kept for rviz compatibility; there is **no** `move_base`).
+- **Output:** `/navigation/cmd_vel` → `cmd_vel_gate` (disabled until `/navigation/enable_motion`) → `/locomotion/cmd_vel`.
+- **Bring-up:** `roslaunch system_bringup navigation.launch map_name:=<name> joint_mode:=relay|dds|fake`.
 
-Not provided by g1_slam and **not currently installed** in the workspace:
-`move_base`, `costmap_2d`, global/local planners, `pointcloud_to_laserscan`,
-`robot_localization`, `amcl`. All are available as `ros-noetic-*` packages.
+Not used: `move_base`, `costmap_2d`, `amcl`, `rtabmap`, `robot_localization`.
 
 ---
 
-## 7. ⚠️ Saved‑map navigation still needs `map → camera_init` relocalization
+## 7. Saved-map navigation: `map → camera_init` relocalization (implemented)
 
-**Do not point `map_server.launch` at an old map and expect it to line up.**
+`camera_init` is re-created at the robot's power-on pose every time `laserMapping` starts, so a saved map
+is only usable after the live `camera_init` has been tied to it.
 
-- `camera_init` is re‑created at the robot's **power‑on pose every time**
-  `laserMapping` starts. A map saved in session 1 is expressed in session 1's
-  `camera_init` origin.
-- On restart, the live `camera_init` is a **different origin with the same
-  name**. `map_server.launch`'s `frame_id: camera_init` default is correct
-  **only within the session that generated the map**.
-- Nothing in this repo publishes a corrective `map → camera_init` (or
-  `map → odom`) transform. Vanilla FAST‑LIO2 has **no relocalization and no
-  prior‑map loading**.
-- Result across sessions: either the map is silently pinned to the wrong origin
-  (if the map frame stays `camera_init`) or `map → base_link` cannot be looked
-  up at all (if the map frame is renamed to `map`). Navigation cannot localize.
-
-**What saved‑map navigation requires (not yet implemented):** a relocalization
-node that matches the live `/cloud_registered` against the saved
-`slam/maps/<name>.pcd` (3D ICP / NDT) and broadcasts TF `map → camera_init`,
-giving `map → camera_init → pelvis`.
-
-**AMCL is not recommended here:** the Mid‑360 produces a sparse, non‑repetitive
-3D scan and there is no 2D laser; a synthesized `LaserScan` is a poor AMCL
-input. Use 3D relocalization. AMCL is only a fallback if the deployment commits
-to a flat, wall‑rich indoor space with a `pointcloud_to_laserscan` slice.
+- **`slam/scripts/relocalizer.py`** matches live `/cloud_registered` against `<map>/map.pcd` (coarse global search + point-to-point ICP; seed with rviz
+  "2D Pose Estimate" on `/initialpose`) and broadcasts TF `map → camera_init`.
+- **`slam/scripts/slam_manager.py`** (`mode:=localization`) latches `/slam/manager/state` = True once localized.
+- **Do not point `map_server.launch` at an old map and expect it to line up** — its `frame_id: camera_init`
+  default is correct only within the session that generated the map. Use `localization.launch`, which serves
+  the tiered `/map` in frame `map`.
+- AMCL is not used (sparse non-repetitive 3D scan, no 2D laser).
 
 ---
 
