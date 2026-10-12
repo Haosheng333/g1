@@ -1,0 +1,50 @@
+<launch>
+  <!-- MANIPULATION STACK: planning, perception, hand and arm execution.
+
+       Every component that touches hardware defaults to DISABLED, so this
+       file is safe to launch as-is and brings up only the planning service:
+
+         arm_planning   ON   planning only, no hardware, no motion
+         perception     off  starts the RealSense driver (needs the camera)
+         hand           off  opens a serial port to the BrainCo Revo2
+         arm_control    off  commands the robot over Unitree DDS (rt/arm_sdk)
+         handover       off  tactile monitor; NOT_READY until its adapter and
+                             thresholds are confirmed (handover/README.md)
+
+       roslaunch system_bringup manipulation.launch
+       roslaunch system_bringup manipulation.launch perception:=true hand:=true side:=right
+
+       arm_control has no launch file of its own, so its node is started
+       directly here rather than by inventing one in another team's package.
+  -->
+  <arg name="side" default="right"/>               <!-- left | right -->
+
+  <arg name="arm_planning" default="true"/>
+  <arg name="perception" default="false"/>
+  <arg name="hand" default="false"/>
+  <arg name="hand_sim" default="false"/>
+  <arg name="hand_com_port" default=""/>
+  <arg name="arm_control" default="false"/>
+  <arg name="handover" default="false"/>
+
+  <!-- Module 2 planning services. Loads models and masks once; publishes
+       /arm/planner/ready so the orchestrator's preflight can see it. -->
+  <include file="$(find arm_planning)/launch/arm_planning.launch" if="$(arg arm_planning)"/>
+
+  <!-- Module 1. Brings up the RealSense driver too, so it needs the camera. -->
+  <include file="$(find perception)/launch/perception.launch" if="$(arg perception)"/>
+
+  <!-- Module 3.2. Real hand over serial unless hand_sim:=true (MuJoCo). -->
+  <include file="$(find hand_control)/launch/hand.launch" if="$(arg hand)">
+    <arg name="side" value="$(arg side)"/>
+    <arg name="sim" value="$(arg hand_sim)"/>
+    <arg name="com_port" value="$(arg hand_com_port)"/>
+  </include>
+
+  <!-- Module 3 execution. REAL ROBOT: 250 Hz DDS command loop. Off by default. -->
+  <node if="$(arg arm_control)" pkg="arm_control" type="arm_control_node.py"
+        name="arm_control_node" output="screen"/>
+
+  <!-- Auto-release handover monitor. Detection only; it actuates nothing. -->
+  <include file="$(find handover)/launch/auto_release_monitor.launch" if="$(arg handover)"/>
+</launch>

@@ -1,0 +1,18 @@
+<launch>
+  <!-- SENSORS ONLY: the Livox Mid-360 driver, with no SLAM and no robot TF.
+
+       Useful for checking the LiDAR on its own:
+         roslaunch system_bringup sensors.launch
+         rostopic hz /livox/lidar /livox/imu
+
+       This is a thin pass-through to g1_slam, which owns the driver
+       configuration (slam/config/mid360_config.json and the host-IP pitfall
+       documented in CLAUDE.md). Nothing is duplicated here.
+
+       The RealSense is NOT started here: perception/launch/perception.launch
+       brings up the camera driver together with the perception node, so there
+       is no camera-only launch interface to pass through to. Use
+       system_bringup/manipulation.launch perception:=true for that.
+  -->
+  <include file="$(find g1_slam)/launch/sensors.launch"/>
+</launch>
