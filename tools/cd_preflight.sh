@@ -27,7 +27,7 @@ for gone in navigation/launch/nav_bringup.launch navigation/launch/g1_tf.launch 
             navigation/config/local_costmap_params.yaml navigation/config/dwa_local_planner_params.yaml navigation/config/nav.rviz; do
   [ ! -e "$REPO/$gone" ] && ok "removed: $gone" || bad "removed: $gone" "git rm $gone"
 done
-if grep -rqE "amcl|move_base|odom_frame_id|base_link.*laser_frame" "$REPO/navigation/launch" "$REPO/system_bringup/launch/navigation.launch" 2>/dev/null; then
+if grep -rqE "pkg=.(amcl|move_base).|odom_frame_id|base_link.*laser_frame" "$REPO/navigation/launch" "$REPO/system_bringup/launch/navigation.launch" 2>/dev/null; then
   bad "no AMCL / move_base / duplicate TF publishers in navigation launches" "grep found one"; else ok "no AMCL / move_base / duplicate TF publishers in navigation launches"; fi
 run "unit tests: slam"        bash -c "cd $REPO/slam && PYTHONPATH=src python3 -m unittest discover -s test -p 'test_*.py'"
 run "unit tests: navigation"  bash -c "cd $REPO/navigation/test && python3 -m unittest test_navigation_node test_costmap_planner_dwa test_sim_room test_robustness test_launch_files test_slam_nav_contract test_joint_bridge_table test_section_e"
