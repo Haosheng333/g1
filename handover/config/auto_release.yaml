@@ -1,0 +1,40 @@
+# auto_release_monitor parameters. Loaded into the node's private namespace by
+# launch/auto_release_monitor.launch; launch args win over this file.
+#
+# TWO VALUES ARE DELIBERATELY UNSET. They are physical properties of a hand
+# that nobody has characterised yet, and the monitor refuses to arm without
+# them rather than guess:
+#
+#   release_delta  how far from the adaptive baseline counts as "the human took it"
+#   direction      whether a release makes the signal rise or drop
+#
+# Fill them in only from measurements on the real hand, together with the
+# tactile block below, and re-run the offline tests afterwards.
+
+release_delta:        # REQUIRED, no default. Units are whatever value_field reports.
+direction:            # REQUIRED, no default. One of: rise | drop | either
+
+# --- tactile input ---------------------------------------------------------------------
+# DISABLED. There is no tactile topic in this workspace: hand_control drives the
+# BrainCo Revo2 over serial, uses finger-position feedback internally
+# (expect_contact in hand_control/config/finger_presets.yaml) and publishes no
+# sensor topic at all. The message type, field layout and units are therefore
+# unknown and are NOT guessed here.
+#
+# The hand owner must confirm all four values below before setting enabled: true.
+tactile:
+  enabled: false
+  topic: ""             # e.g. /hand_left/tactile
+  message_type: ""      # "pkg/Msg", imported at runtime; e.g. std_msgs/Float32MultiArray
+  value_field: ""       # dotted path into the message, e.g. "data" or "wrench.force.z"
+  reduction: mean       # mean | max | min | sum | first | norm
+
+# --- signal processing -----------------------------------------------------------------
+# These are not hardware constants, so they do have defaults.
+baseline_samples: 20       # samples averaged into the adaptive baseline
+baseline_timeout_s: 5.0    # give up baselining if that many samples do not arrive
+debounce_samples: 3        # consecutive over-threshold samples required
+min_hold_s: 0.20           # ... and the excursion must persist at least this long
+sample_timeout_s: 0.50     # a gap longer than this is stale: WAIT, never a trigger
+monitor_timeout_s: 120.0   # overall arm-to-trigger budget; 0 disables it
+rate: 20.0                 # Hz, state-machine tick

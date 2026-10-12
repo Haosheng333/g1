@@ -1,0 +1,28 @@
+<launch>
+  <!-- Auto-release handover monitor (detection only; it actuates nothing).
+
+         /auto_release_monitor/arm      std_srvs/Trigger
+         /auto_release_monitor/disarm   std_srvs/Trigger
+         /auto_release_monitor/state    std_msgs/String  (latched)
+         /auto_release_monitor/ready    std_msgs/Bool    (latched)
+
+       On a verified detection it calls /orchestrator/run_auto_release once.
+       It never calls a hand or arm service itself.
+
+       OUT OF THE BOX THIS NODE IS NOT_READY, by design: the tactile adapter is
+       disabled and release_delta/direction are unset, because no tactile topic
+       exists in this workspace yet and those magnitudes have not been measured.
+       Arming is refused with the exact list of what is missing. See
+       config/auto_release.yaml.
+
+       roslaunch handover auto_release_monitor.launch
+       rostopic echo -n1 /auto_release_monitor/ready
+  -->
+  <arg name="config" default="$(find handover)/config/auto_release.yaml"/>
+  <arg name="rate" default="20.0"/>
+
+  <node pkg="handover" type="auto_release_monitor.py" name="auto_release_monitor" output="screen">
+    <rosparam command="load" file="$(arg config)"/>
+    <param name="rate" value="$(arg rate)"/>
+  </node>
+</launch>
