@@ -12,4 +12,4 @@ scripts/
 ├── g1_collision_probe.py
 ├── g1_forward_kinematics.py
 ├── grasp_geometry.py
-└── torch_forward_kinematics.py
+└── torch_g1_fk.py
