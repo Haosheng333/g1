@@ -38,6 +38,7 @@ from std_msgs.msg import Bool, Empty, String
 from g1_navigation.srv import NavigateToObject, NavigateToObjectResponse
 from g1_slam import cloud_utils as cu
 
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E402
 from costmap import CostmapManager
 from global_planner import AStarPlanner
 from local_planner import SPEC_XY_TOL, SPEC_YAW_TOL, DwaController

@@ -34,13 +34,14 @@ catkin_install_python(PROGRAMS
   scripts/send_goal_node.py
   scripts/send_waypoints_node.py
   scripts/nav_client.py
-  scripts/semantic_goal.py
-  scripts/costmap.py
-  scripts/global_planner.py
-  scripts/local_planner.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
 install(DIRECTORY launch config rviz sim
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+)
+
+# helper modules: plain files, NOT catkin_install_python wrappers (a wrapper shadows the real module)
+install(FILES scripts/costmap.py scripts/global_planner.py scripts/local_planner.py scripts/semantic_goal.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
