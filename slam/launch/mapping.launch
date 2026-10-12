@@ -1,0 +1,30 @@
+<launch>
+  <!-- OFFLINE MAPPING (doc 4.1): sensors + FAST-LIO2 + robot TF + slam_manager.
+       Operator workflow:
+         1. roslaunch g1_slam mapping.launch rviz:=true map_name:=lab
+         2. teleoperate the robot around the site until the map looks complete
+         3. rosservice call /slam/manager/save_current_map "{}"
+       Output: slam/maps/<map_name>/{map.pcd,map_zup.pcd,map.pgm,map.yaml,manifest.yaml,semantic.yaml}
+               and the symlink slam/maps/current -> <map_name>.
+
+       Args
+         map_name  folder name; empty -> g1_map_<timestamp>
+         floor_z   camera_init z of the floor (z is DOWN, so +IMU height);
+                   "auto" = estimate from the cloud
+  -->
+  <arg name="rviz" default="false"/>
+  <arg name="map_name" default=""/>
+  <arg name="floor_z" default="auto"/>
+  <arg name="maps_dir" default="$(find g1_slam)/maps"/>
+
+  <include file="$(find g1_slam)/launch/slam_bringup.launch">
+    <arg name="rviz" value="$(arg rviz)"/>
+  </include>
+
+  <node pkg="g1_slam" type="slam_manager.py" name="slam_manager" output="screen">
+    <param name="mode" value="mapping"/>
+    <param name="map_name" value="$(arg map_name)"/>
+    <param name="maps_dir" value="$(arg maps_dir)"/>
+    <param name="floor_z" type="str" value="$(arg floor_z)"/>
+  </node>
+</launch>
