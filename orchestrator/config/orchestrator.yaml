@@ -1,0 +1,34 @@
+# orchestrator parameters, loaded into the node's private namespace by
+# launch/orchestrator.launch. Launch args win over this file.
+
+# --- safety ----------------------------------------------------------------------------
+# false (the default) = every route runs as a DRY RUN: no robot service client is
+# constructed at all, every step is traversed, nothing moves. Set true only
+# deliberately, and only after the blockers reported by a dry run are cleared.
+enable_motion: false
+
+# Which arm/hand the hand and arm steps address.
+side: right
+
+# --- timeouts (seconds) ----------------------------------------------------------------
+timeouts:
+  localization: 30.0      # waiting for /slam/manager/state to go true
+  navigate: 1800.0        # /navigation/navigate to a terminal status, per nav_client
+  service_call: 10.0      # generic service call budget
+
+# How long preflight waits for each service to appear before calling it missing.
+service_timeout_s: 1.0
+
+# --- retries ---------------------------------------------------------------------------
+# Attempts per backend ACTION name. Anything unlisted gets exactly one attempt,
+# because retrying a motion step is not safe by default.
+#
+# close_gripper is 3 because hand_control documents the caller as retrying the
+# grasp (hand_control/README.md); a failed grasp is expected to be re-tried
+# rather than aborted.
+default_attempts: 1
+retries:
+  close_gripper: 3
+  open_gripper: 2
+  release_hand: 2
+  detect_object: 2

@@ -1,0 +1,20 @@
+# /orchestrator/run_{grasp,deliver,auto_release}  --  run one declarative route.
+#
+# SAFETY: execution is DRY-RUN unless the node was launched with
+# enable_motion:=true. A dry run constructs no robot service clients at all and
+# traverses every step, so a route can be rehearsed with the robot powered off.
+# Setting dry_run=true forces a dry run even on a motion-enabled node; there is
+# deliberately no field that can force motion ON.
+string route         # optional guard: must be empty or match the service's own route
+string target        # route-dependent: semantic waypoint name, perception label, ...
+string start_step    # "" = from the beginning; else resume at this step name
+bool   dry_run       # true = force a dry run; false = use the node's enable_motion
+---
+bool     success
+string   message
+string[] steps_completed    # step names that ran to completion, in order
+string[] steps_skipped      # steps skipped by start_step resume
+string[] blockers            # every preflight blocker found; empty when ready
+string   final_step          # last step reached (the failing one when success=false)
+bool     motion_issued       # true only if a real motion command was actually sent
+bool     dry_run             # how the route was actually executed
