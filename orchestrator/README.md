@@ -78,13 +78,55 @@ release is just as broken.
 So the callback only **validates and records**:
 
 1. `handover_state.HandoverState.request_release()` checks the task state under
-   its **own** small mutex, never the execution lock.
+   its **own** small mutex, never the execution lock. **Implemented.**
 2. On success the validated pull is recorded as a numbered event.
-3. The task that already owns the execution lock calls `consume_pending()` and
-   performs the release under its existing ownership.
+   **Implemented.**
+3. The task that owns the execution lock would call `consume_pending()` and
+   perform the release under its existing ownership. **NOT IMPLEMENTED — see
+   the next section.**
 
 There is exactly one motion path, and the service callback is not on it. The
 callback's response always carries `motion_issued=False`.
+
+## ⚠ The delivery route does not consume handover events
+
+**End-to-end delivery is incomplete.** An earlier version of this section
+described step 3 above in the present tense, which overstated it. The
+consumer half was never written:
+
+| `HandoverState` method | callers outside its own module and tests |
+|---|---|
+| `begin()` | **0** |
+| `mark_awaiting_pull()` | **0** |
+| `mark_releasing()` | **0** |
+| `mark_released()` | **0** |
+| `consume_pending()` | **0** |
+| `abandon()` | **0** |
+| `request_release()` | 2 (the monitor, and this service) |
+
+Consequences, all verified rather than inferred:
+
+* Nothing ever puts the task into `AWAITING_PULL`, so `request_release()`
+  **always** returns `rejected: no object is recorded as held`. That is
+  structural, not a transient state.
+* `consume_pending()` is unreachable from the production path.
+* The `deliver` route is four steps and stops at `arm_handover`:
+  `await_localization → enable_motion → navigate → arm_handover`. It has no
+  await-pull, release, retract or home step.
+* The `auto_release` route (`release_hand`, `disarm_handover`) is **orphaned**:
+  `/orchestrator/run_auto_release` is bound to `handle_release_request`, and
+  `make_handler` covers only `navigate_report`, `grasp` and `deliver`, so no
+  service invokes that route. Its two steps are also in the reverse of the
+  specified order (release before disarm).
+* `final_step="await_pull"` in the release response is a label, not a step that
+  exists in any route.
+
+Of the specified release sequence `disarm → release → confirm → retract →
+home`, **none of the five is implemented in the delivery path**.
+
+`docs/DELIVERY_FLOW.md` holds the status classification, the proposed route,
+the unresolved inputs it depends on, and the integration tests that would
+demonstrate it. Until that lands, real delivery stays NOT_READY.
 
 A request is rejected when:
 
@@ -106,8 +148,9 @@ and — by AST inspection — that `handle_release_request` references no lock, 
 route and no service proxy.
 
 **This patch does not execute the release sequence on hardware.** The
-plumbing and validation are in place; the hand-opening and retraction steps
-remain unreachable for a real run.
+validation half is implemented and tested; the producer and consumer halves
+are absent, so the hand-opening and retraction steps are unreachable for a
+real run.
 
 ## The `saw_active` guard
 
