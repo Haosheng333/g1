@@ -50,16 +50,16 @@ jobs:
         run: PYTHONPATH=src python -m unittest discover -s test -p "test_*.py" -v
       - name: navigation tests (state machine, costmap, planner, DWA, sim room acceptance)
         working-directory: navigation/test
-        run: python -m unittest test_navigation_node test_costmap_planner_dwa test_sim_room test_robustness test_launch_files test_slam_nav_contract test_joint_bridge_table test_section_e -v
+        run: python -m unittest test_navigation_node test_costmap_planner_dwa test_sim_room test_robustness test_launch_files test_slam_nav_contract test_joint_bridge_table test_section_e test_section_g test_locomotion_bridge test_section_f -v
       - name: arm_planning tests (request validation, flattening, joint order, asset paths)
         working-directory: arm_planning
         run: python -m unittest discover -s test -v
 
-      - name: handover tests (release state machine, tactile adapter, node contract)
+      - name: handover tests (detector, tactile adapter, detection-only, node contract)
         working-directory: handover
         run: python -m unittest discover -s test -v
 
-      - name: orchestrator tests (routes, preflight, saw_active guard, dry-run safety)
+      - name: orchestrator tests (routes, preflight, saw_active guard, release ownership)
         working-directory: orchestrator/test
         run: python -m unittest discover -s . -v
 

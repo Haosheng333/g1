@@ -2,7 +2,7 @@
 # Robot-free preflight for sections A and B. Run INSIDE the container:
 #   docker/g1.sh enter 'bash ~/Workspace/DIP/tools/ab_preflight.sh'
 # Prints PASS/FAIL per item; exit code 1 if anything failed.
-REPO=~/Workspace/DIP
+REPO=${REPO:-~/Workspace/DIP}
 source "$REPO/g1_ws/devel/setup.bash" --extend 2>/dev/null
 FAILED=0
 ok()   { echo "[PASS] $1"; }
@@ -10,7 +10,8 @@ bad()  { echo "[FAIL] $1  -- $2"; FAILED=1; }
 run()  { local name="$1"; shift; local out; if out=$("$@" 2>&1); then ok "$name"; else bad "$name" "$(echo "$out" | tail -3 | tr '\n' ' ')"; fi; }
 
 run "python libs (numpy scipy yaml rospkg)" python3 -c "import numpy, scipy, yaml, rospkg"
-run "rospack finds g1_slam g1_navigation"     rospack find g1_slam g1_navigation
+run "rospack finds g1_slam"       rospack find g1_slam
+run "rospack finds g1_navigation" rospack find g1_navigation
 run "rossrv NavigateToObject generated"       rossrv show g1_navigation/NavigateToObject
 run "g1_slam python package importable"       python3 -c "from g1_slam import cloud_utils, grid_utils"
 run "pcd_to_map binary runs"                  rosrun g1_slam pcd_to_map --help
