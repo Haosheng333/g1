@@ -30,6 +30,7 @@ catkin_install_python(PROGRAMS
   scripts/cmd_vel_gate.py
   scripts/obstacle_cloud_node.py
   scripts/g1_joint_state_bridge.py
+  scripts/locomotion_bridge.py
   scripts/sim_world.py
   scripts/send_goal_node.py
   scripts/send_waypoints_node.py

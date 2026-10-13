@@ -28,11 +28,22 @@
   <arg name="network_interface" default=""/>               <!-- dds: e.g. enp2s0 -->
   <arg name="allow_fake_zeros" default="false"/>           <!-- fake: bench only -->
 
+  <!-- locomotion_bridge: /locomotion/cmd_vel -> G1 walking controller.  OFF by default; when on it starts in
+       DRY RUN (logs only).  Walking needs BOTH  locomotion:=true locomotion_dry_run:=false  AND
+       rosservice call /navigation/enable_motion "data: true". -->
+  <arg name="locomotion" default="false"/>
+  <arg name="locomotion_dry_run" default="true"/>
+
   <node pkg="g1_navigation" type="g1_joint_state_bridge.py" name="g1_joint_state_bridge" output="screen">
     <param name="mode" value="$(arg joint_mode)"/>
     <param name="input_topic" value="$(arg joint_input_topic)"/>
     <param name="network_interface" value="$(arg network_interface)"/>
     <param name="allow_fake_zeros" type="bool" value="$(arg allow_fake_zeros)"/>
+  </node>
+
+  <node if="$(arg locomotion)" pkg="g1_navigation" type="locomotion_bridge.py" name="locomotion_bridge" output="screen">
+    <param name="dry_run" type="bool" value="$(arg locomotion_dry_run)"/>
+    <param name="network_interface" value="$(arg network_interface)"/>
   </node>
 
   <include file="$(find g1_slam)/launch/localization.launch">
