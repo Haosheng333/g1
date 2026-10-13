@@ -56,16 +56,27 @@ class NeverActuates(unittest.TestCase):
         self.assertEqual(constant.group(1), "/orchestrator/run_auto_release")
 
     def test_only_arm_and_disarm_are_advertised(self):
-        advertised = sorted(set(re.findall(r'rospy\.Service\(\s*"([^"]+)"', self.code)))
-        self.assertEqual(
-            advertised, ["/auto_release_monitor/arm", "/auto_release_monitor/disarm"]
-        )
+        """Four names, but only two operations: legacy plus side-qualified."""
+        advertised = sorted(set(
+            re.findall(r'rospy\.Service\(\s*"([^"]+)"', self.code)
+            + re.findall(r'rospy\.Service\(\s*"([^"]+)"\s*%', self.code)))
+        for name in advertised:
+            self.assertTrue(
+                name.startswith("/auto_release_monitor/"),
+                "unexpected service %r" % name)
+            self.assertTrue(
+                name.endswith(("/arm", "/disarm")),
+                "the monitor may only advertise arm and disarm, got %r" % name)
+        self.assertIn("/auto_release_monitor/arm", advertised)
+        self.assertIn("/auto_release_monitor/disarm", advertised)
 
-    def test_publishes_only_state_and_ready(self):
+    def test_publishes_only_diagnostics(self):
         published = sorted(set(re.findall(r'rospy\.Publisher\(\s*"([^"]+)"', self.code)))
-        self.assertEqual(
-            published, ["/auto_release_monitor/ready", "/auto_release_monitor/state"]
-        )
+        self.assertEqual(published, [
+            "/auto_release_monitor/event",
+            "/auto_release_monitor/ready",
+            "/auto_release_monitor/state",
+        ])
 
     def test_orchestrator_service_type_is_imported_lazily(self):
         """A top-level import would stop the node starting before orchestrator is built."""

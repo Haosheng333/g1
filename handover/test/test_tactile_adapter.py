@@ -192,29 +192,79 @@ class ShippedConfigIsSafe(unittest.TestCase):
     def test_tactile_is_disabled_in_the_shipped_config(self):
         self.assertFalse(self._yaml()["tactile"]["enabled"])
 
-    def test_hardware_thresholds_are_unset_in_the_shipped_config(self):
+    def test_no_tactile_channels_are_mapped_in_the_shipped_config(self):
+        """A shipped mapping would be a guess at an unconfirmed schema."""
         data = self._yaml()
-        self.assertIsNone(data["release_delta"], "a shipped threshold would be a guess")
-        self.assertIsNone(data["direction"], "a shipped direction would be a guess")
+        self.assertEqual(data["tactile"]["channels"], [])
+        self.assertEqual(data["tactile"]["topic"], "")
+        self.assertEqual(data["tactile"]["message_type"], "")
+
+    def test_release_integration_is_off_in_the_shipped_config(self):
+        self.assertFalse(self._yaml()["release_integration"])
+
+    def test_calibration_values_are_unset_in_the_shipped_config(self):
+        calib = self._yaml()["calibration"]
+        self.assertIn(calib["debounce_sec"], (None, ""),
+                      "a shipped debounce would be a guess")
+        self.assertEqual(calib["release_threshold"], {}, "a shipped threshold would be a guess")
+        self.assertEqual(calib["stable_tolerance"], {}, "a shipped tolerance would be a guess")
+        self.assertEqual(calib["direction"], {}, "a shipped direction would be a guess")
+
+    def test_the_shipped_config_contains_no_yaml_nulls(self):
+        """A bare `key:` uploads None, which the ROS parameter server rejects.
+
+        rosparam aborts with "cannot marshal None unless allow_none is enabled"
+        and the node never starts, so "unset" must be "" or an absent key.
+        """
+        def nulls(node, path=""):
+            found = []
+            if node is None:
+                found.append(path or "<root>")
+            elif isinstance(node, dict):
+                for k, v in node.items():
+                    found.extend(nulls(v, "%s/%s" % (path, k)))
+            elif isinstance(node, list):
+                for i, v in enumerate(node):
+                    found.extend(nulls(v, "%s[%d]" % (path, i)))
+            return found
+
+        offenders = nulls(self._yaml())
+        self.assertEqual(offenders, [], "YAML nulls would crash roslaunch: %s" % offenders)
 
     def test_shipped_config_cannot_be_armed(self):
-        from handover.release_monitor import MonitorConfig, ReleaseMonitor
+        from handover.tactile_detector import TactileDetectorConfig, TactileReleaseDetector
 
         data = self._yaml()
-        monitor = ReleaseMonitor(
-            config=MonitorConfig(
-                release_delta=data["release_delta"],
-                direction=data["direction"],
-                baseline_samples=data["baseline_samples"],
-                debounce_samples=data["debounce_samples"],
-                min_hold_s=data["min_hold_s"],
-                sample_timeout_s=data["sample_timeout_s"],
-                monitor_timeout_s=data["monitor_timeout_s"],
-            )
-        )
-        outcome = monitor.arm(0.0)
+        calib = data["calibration"]
+        detector = TactileReleaseDetector(TactileDetectorConfig(
+            channels={},                                  # nothing mapped
+            enabled_channels=tuple(calib["enabled_channels"] or []),
+            release_threshold=dict(calib["release_threshold"] or {}),
+            stable_tolerance=dict(calib["stable_tolerance"] or {}),
+            direction=dict(calib["direction"] or {}),
+            debounce_sec=None if calib["debounce_sec"] == "" else calib["debounce_sec"],
+            baseline_frames=data["baseline_frames"],
+            moving_average_frames=data["moving_average_frames"],
+            post_arm_suppress_sec=data["post_arm_suppress_sec"],
+            sample_timeout_sec=data["sample_timeout_sec"],
+            monitor_timeout_sec=data["monitor_timeout_sec"],
+            baseline_timeout_sec=data["baseline_timeout_sec"],
+        ))
+        outcome = detector.arm(0.0)
         self.assertFalse(outcome.ok)
         self.assertIn("NOT_READY", outcome.reason)
+
+    def test_the_shipped_adapter_config_is_also_unusable(self):
+        from handover import tactile_adapter as _ta
+
+        data = self._yaml()["tactile"]
+        cfg = _ta.TactileAdapterConfig(
+            enabled=data["enabled"], topic=data["topic"],
+            message_type=data["message_type"], mappings=())
+        problems = cfg.validate()
+        self.assertTrue(problems)
+        self.assertIn("disabled", problems[0])
+        self.assertIn("main_mod.pyi", problems[0])
 
 
 if __name__ == "__main__":

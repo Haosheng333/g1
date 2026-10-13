@@ -15,6 +15,7 @@ catkin_package(
 
 catkin_install_python(PROGRAMS
   scripts/auto_release_monitor.py
+  scripts/record_tactile.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
