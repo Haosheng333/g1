@@ -9,7 +9,7 @@ Measures, from the running system:
   * rates: /Odometry, /joint_states, /cloud_registered, /obstacle_cloud, /map
   * map->pelvis lookup: success rate and age of the newest transform (navigation uses Time(0))
   * map->camera_init age (relocalizer publishes at 10 Hz)
-  * whether `base_link` is in the tree (slam_health_check FAILs if so)
+  * whether the identity pelvis -> base_link alias is in the tree (system_bringup, with_base_link, default on)
 Exit 0 only if every check passes.
 """
 import argparse
@@ -108,9 +108,9 @@ def main():
           "max age %.3f s" % (max(ages_reloc) if ages_reloc else float("nan")))
     try:
         buf.lookup_transform("pelvis", "base_link", rospy.Time(0))
-        print("[INFO] base_link is in the tree (with_base_link:=true): slam_health_check --component tf will FAIL")
+        print("[INFO] base_link is in the tree: the identity alias of pelvis published by system_bringup")
     except Exception:
-        print("[INFO] base_link not in the tree (default)")
+        print("[INFO] base_link not in the tree (with_base_link:=false, or system_bringup not running): perception results in base_link cannot be transformed")
     print("\nALL TF TIMING CHECKS PASSED" if not fails else "\nFAILED: " + "; ".join(fails))
     return 1 if fails else 0
 

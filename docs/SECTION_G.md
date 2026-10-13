@@ -6,7 +6,7 @@ Review items 27-29 plus "not defined in the document". Pinned by `navigation/tes
 | # | Issue | Now | Where it is enforced |
 |---|---|---|---|
 | 27 | a second nav stack (AMCL + move_base + DWAPlannerROS) next to the one navigation node | removed; one `navigation_node` | `Item27OneStack` |
-| 28 | several publishers for `odom -> base_link` | no `odom` frame; chain is `map -> camera_init -> pelvis`; `base_link` is an optional identity child of `pelvis`, published only in `system_bringup/launch/navigation.launch` behind `with_base_link` (default off) | `Item28OneTfPublisher` |
+| 28 | several publishers for `odom -> base_link` | no `odom` frame; chain is `map -> camera_init -> pelvis`; `base_link` is an optional identity child of `pelvis`, published only in `system_bringup/launch/navigation.launch` behind `with_base_link` (default on since docs/FRAME_CONTRACT.md) | `Item28OneTfPublisher` |
 | 29 | acceptance test not testable (constant scan, no obstacles) | `sim_world.py` + a furnished room; `tools/nav_acceptance_test.py` checks 0.10 m / 0.1 rad and ground-truth collisions | `Item29Testable`, `cd_preflight.sh` part 2 |
 | - | `g1_joint_state_bridge` published all-zero `/joint_states` while logging "Live" | relay / dds modes only; zeros need `allow_fake_zeros:=true` and are in `run_fake()` alone | `NotDefinedInDocument` |
 | - | package.xml / CMakeLists / srv / rviz / map | present | `NotDefinedInDocument` |

@@ -126,7 +126,7 @@ approximate and follow the LiDAR frame rate (~10 Hz for the Mid‑360 default).
 g1_slam subscribes to it and never synthesizes it.
 
 g1_slam does **not** publish `/cmd_vel`, costmaps, plans, goals, or `base_link` —
-those belong to the navigation package. **`base_link` is never published by g1_slam**; navigation can add an optional identity alias, see §4b.
+those belong to the navigation package. **`base_link` is never published by g1_slam**; `system_bringup` publishes the identity alias (§4b).
 
 ---
 
@@ -145,7 +145,7 @@ world                                        z-up view frame (slam_bringup.launc
         └── left|right_shoulder_* → … → wrists                  rsp, revolute
 
 base_link                                    OPTIONAL identity alias of pelvis, published by system_bringup
-                                             only with `with_base_link:=true` (off by default, §4b)
+                                             by default (`with_base_link`, §4b)
 ```
 
 `camera_init` has two children and every other frame has exactly one parent, so
@@ -160,7 +160,7 @@ brevity; it hangs off `camera_init → pelvis`.)
 | `pelvis` | The official URDF root, and the frame g1_slam publishes. | `/g1_tf_publisher` (`camera_init → pelvis`) |
 | `torso_link` | G1 torso; carries the Mid‑360. Child of `pelvis` through **revolute** `waist_yaw_joint`. | `robot_state_publisher` |
 | `mid360_link` | The Mid‑360 **LiDAR** frame, per the URDF. Fixed to `torso_link`; the `rpy` roll of π is the **upside‑down mount**. | `robot_state_publisher` |
-| `base_link` | **Not published by g1_slam.** Optional identity alias of `pelvis` (`with_base_link:=true` in `system_bringup/launch/navigation.launch`, default off) — see §4b. | `system_bringup` (optional) |
+| `base_link` | **Not published by g1_slam.** Identity alias of `pelvis`, published by `system_bringup` (`with_base_link`, default on) — see §4b. | `system_bringup` |
 
 ### The chain, and the one transform deliberately not broadcast
 
@@ -240,18 +240,16 @@ Required interface:
 `slam_health_check.py --component tf` reports **WAIT** while it is absent, never
 FAIL — its absence is a pending integration step, not a defect.
 
-### 4b. `pelvis → base_link` — settled: optional alias, owned by `system_bringup`
+### 4b. `pelvis → base_link` — settled: identity alias, owned by `system_bringup`
 
-Navigation works entirely in `map` and `pelvis` (`navigation.yaml: robot_frame: pelvis`), so it does **not**
-need `base_link`. For perception/arm code that speaks `base_link`, `system_bringup/launch/navigation.launch`
-can publish an **identity** `pelvis → base_link` (`with_base_link:=true`). It is **off by default** because
-`slam_health_check.py --component tf` FAILs as soon as `base_link` exists in the TF tree; switch it on only
-together with an agreed update of that check. g1_slam itself never publishes it:
-`config/g1_tf.yaml` keeps `base_link_alias: ""` (the node rejects any other value) and
-`test/test_tf_transforms.py` asserts `base_link` appears nowhere in the URDF.
-
-`perception/` documents its results in `base_link`; whoever launches perception must either pass
-`with_base_link:=true` or transform from `pelvis`.
+Decision (navigation team): **`base_link` is an identity alias of `pelvis`** (zero translation, zero rotation). `pelvis`
+is the URDF root and the waist is its *child*, so "the pelvis at zero waist yaw", which is how `perception/` defines
+`base_link`, is exactly `pelvis`. `system_bringup/launch/navigation.launch` publishes it (`with_base_link`, **on by
+default**; `false` only when nothing speaks `base_link`). g1_slam itself never publishes it:
+`config/g1_tf.yaml` keeps `base_link_alias: ""` (the node rejects any other value, so the frame has exactly one
+publisher) and `test/test_tf_transforms.py` asserts `base_link` appears nowhere in the URDF.
+`slam_health_check.py --component tf` only inspects the edges g1_slam, FAST-LIO2 and the URDF declare; if `base_link`
+ever appears there, its parent must be `pelvis`. Full contract and the torso_link question: `docs/FRAME_CONTRACT.md`.
 
 Navigation needs 4a, and nothing else, to place the robot in a saved map: with a real `/joint_states` the chain
 `map → camera_init → pelvis` is complete once the relocalizer has localized (§7).
