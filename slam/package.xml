@@ -35,7 +35,7 @@
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-scipy</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
-  <exec_depend>rospkg</exec_depend>
+  <exec_depend>python3-rospkg</exec_depend>
 
   <!-- Offline pcd_to_map converter only. -->
   <depend>libpcl-all-dev</depend>
