@@ -5,3 +5,11 @@ install/
 .catkin_workspace
 # External FAST-LIO2 clone (see README.md for how it is fetched and patched)
 fast_lio/
+
+# Per-machine paths for the external dependencies (see local.conf.example).
+local.conf
+# Untracked overlay symlinks created by tools/bootstrap_workspace.sh --apply,
+# used when the tracked src/<pkg> symlink points at another machine's layout.
+src/local_*
+# Marker that stops a PARENT catkin workspace descending into this one.
+CATKIN_IGNORE

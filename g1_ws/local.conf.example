@@ -1,0 +1,24 @@
+# Per-machine paths for this repo's two external catkin dependencies.
+#
+# Copy to  g1_ws/local.conf  and edit. local.conf is UNTRACKED (.gitignore), so
+# it describes only your machine and can never break anyone else's.
+#
+#   cp g1_ws/local.conf.example g1_ws/local.conf
+#   tools/bootstrap_workspace.sh --check
+#
+# You usually do NOT need this file: tools/bootstrap_workspace.sh already finds
+# both packages via `rospack find` (if a workspace is sourced) or by looking in
+# the parent catkin source space. Use it only when they live somewhere unusual.
+#
+# Only these two keys are read, and the file is parsed with sed, never sourced
+# as shell, so nothing here can execute.
+#
+# Relative paths are resolved against g1_ws/. Absolute paths are used as given.
+
+# Livox Mid-360 ROS1 driver. Needed to build g1_slam and to run
+# g1_slam/launch/sensors.launch. Equivalent env var: G1_LIVOX_DIR
+# livox_ros_driver2_dir = /path/to/livox_ros_driver2
+
+# hku-mars FAST-LIO2, patched for livox_ros_driver2 messages (see README.md).
+# Equivalent env var: G1_FAST_LIO_DIR
+# fast_lio_dir = /path/to/FAST_LIO
