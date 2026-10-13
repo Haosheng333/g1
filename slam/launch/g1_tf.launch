@@ -15,7 +15,7 @@
        needs /joint_states carrying waist_yaw_joint - an EXTERNAL interface owned
        by the robot-control / integration team. Until that topic exists the node
        comes up, warns, and publishes nothing. It never fabricates joint states,
-       and it never publishes base_link (still unresolved with navigation).
+       and it never publishes base_link (system_bringup owns the identity pelvis -> base_link alias).
 
        PATH RESOLUTION: roslaunch expands $(find ...) here, in launch XML - it
        does NOT expand it inside config/g1_tf.yaml. So urdf_file is an arg, it

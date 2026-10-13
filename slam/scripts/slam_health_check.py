@@ -52,8 +52,8 @@ ROBOT_ROOT_FRAME = "pelvis"             # official URDF root; what we broadcast
 TORSO_FRAME = "torso_link"              # carries the Mid-360; child of waist_yaw_joint
 LIDAR_FRAME = "mid360_link"             # Mid-360 LiDAR frame, per the URDF
 
-# `base_link` is an UNRESOLVED integration decision pending the navigation team.
-# Nothing in this package may publish or invent it; the checks below assert that.
+# `base_link` is an identity alias of `pelvis` published by system_bringup (decision settled by the navigation
+# team). Nothing in THIS package may publish it; if it shows up in the declared edges its parent must be `pelvis`.
 UNRESOLVED_BASE_FRAME = "base_link"
 
 # (parent, child) TF edges FAST-LIO2's laserMapping node broadcasts itself.
@@ -904,15 +904,14 @@ def check_g1_tf_config(results, pkg_path, require_hardware):
     alias = "" if alias is None else str(alias)
     if alias.strip():
         results.add(name, STATUS_FAIL,
-                    "base_link_alias={!r}: the {} -> {} mapping is an unresolved "
-                    "integration decision pending the navigation team; publishing a "
-                    "guessed transform is not supported".format(
+                    "base_link_alias={0!r}: g1_slam never publishes {2}; the identity {1} -> {2} "
+                    "alias is owned by system_bringup, a second publisher is not supported".format(
                         alias, ROBOT_ROOT_FRAME, UNRESOLVED_BASE_FRAME))
         return
 
     results.add(name, hardware_status(require_hardware),
-                "{} -> {} wiring valid, no paths in YAML; {} -> {} deliberately "
-                "unresolved (base_link_alias empty) pending the navigation team".format(
+                "{} -> {} wiring valid, no paths in YAML; {} -> {} is not published "
+                "here (base_link_alias empty; system_bringup owns the identity alias)".format(
                     FASTLIO_MAP_FRAME, ROBOT_ROOT_FRAME,
                     ROBOT_ROOT_FRAME, UNRESOLVED_BASE_FRAME))
 
@@ -1154,12 +1153,13 @@ def check_tf_single_parent(results, pkg_path, fastlio_pkg_path):
                          "of {}".format(FASTLIO_BODY_FRAME, LIDAR_FRAME,
                                         LIDAR_FRAME, TORSO_FRAME))
 
-    # Nothing may invent base_link while the mapping is unresolved.
+    # base_link is system_bringup's identity alias of pelvis: if any declared edge mentions it, pelvis must be
+    # its only parent (anything else is a second publisher or a different mapping).
     frames = set(parents_of) | {p for p, _c in all_edges}
-    if UNRESOLVED_BASE_FRAME in frames:
-        conflicts.append("{} appears in the TF tree but the {} -> {} mapping is still "
-                         "unresolved with the navigation team".format(
-                             UNRESOLVED_BASE_FRAME, ROBOT_ROOT_FRAME, UNRESOLVED_BASE_FRAME))
+    if UNRESOLVED_BASE_FRAME in frames and parents_of.get(UNRESOLVED_BASE_FRAME) != ROBOT_ROOT_FRAME:
+        conflicts.append("{} appears in the TF tree with parent {!r}, but it must only ever be the identity "
+                         "child of {}".format(UNRESOLVED_BASE_FRAME, parents_of.get(UNRESOLVED_BASE_FRAME),
+                                              ROBOT_ROOT_FRAME))
 
     roots = sorted(frames - set(parents_of))
     if roots != [FASTLIO_MAP_FRAME]:
@@ -1172,7 +1172,7 @@ def check_tf_single_parent(results, pkg_path, fastlio_pkg_path):
 
     results.add(name, STATUS_PASS,
                 "single parent per frame across {} frame(s): {} -> {{{}, {}}}, then the "
-                "URDF chain {} -> {} -> {}; {} absent as required".format(
+                "URDF chain {} -> {} -> {}; {} absent here (system_bringup's identity alias is the only allowed parent: pelvis)".format(
                     len(frames), FASTLIO_MAP_FRAME, FASTLIO_BODY_FRAME, ROBOT_ROOT_FRAME,
                     ROBOT_ROOT_FRAME, TORSO_FRAME, LIDAR_FRAME, UNRESOLVED_BASE_FRAME))
 

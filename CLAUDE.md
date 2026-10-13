@@ -107,7 +107,7 @@ python3 ~/Workspace/DIP/tools/ab_live_check.py          # never moves the robot
 
 Frames: `map` (z-up, saved map) -> `camera_init` (relocalizer) -> `pelvis`
 (g1_tf_publisher, needs REAL `/joint_states`). `base_link` is an OPTIONAL identity alias of
-`pelvis` (`with_base_link:=true`, off by default so `slam_health_check.py` stays green).
+`pelvis` published by `system_bringup` (`with_base_link`, ON by default; see docs/FRAME_CONTRACT.md).
 
 ## Run (SLAM)
 

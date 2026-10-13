@@ -20,7 +20,7 @@ layers**, plus a localization gate, semantic goals, a motion gate and a simulato
 
 `map` (z-UP, the saved map) -> `camera_init` (relocalizer, `g1_slam`) -> `pelvis` (`g1_tf_publisher`, **needs the real
 `/joint_states`**). FAST-LIO2's `camera_init` is z-DOWN, so navigation never works in it. `base_link` is an optional identity
-alias of `pelvis` (`with_base_link:=true` on `navigation.launch`; off by default because `slam_health_check.py` FAILs if it sees `base_link`).
+alias of `pelvis` (`with_base_link` on `system_bringup/launch/navigation.launch`, ON by default; see docs/FRAME_CONTRACT.md).
 
 ## Interfaces
 
