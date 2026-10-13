@@ -13,15 +13,15 @@
 
        Motion stays DISABLED until:  rosservice call /navigation/enable_motion "data: true"
 
-       base_link: OFF by default.  slam_health_check.py (component tf) FAILs as soon as `base_link` exists in the
-       TF tree (slam/README section 4b: unresolved).  Pass with_base_link:=true only when perception/arm code
-       needs it, and update that health check at the same time.  When on, it is an identity child of pelvis,
-       published HERE and nowhere in g1_slam.
+       base_link: ON by default (decision settled, docs/FRAME_CONTRACT.md).  It is an IDENTITY child of pelvis,
+       published HERE and nowhere else (g1_slam never publishes it): perception reports positions in base_link,
+       defined as the pelvis at zero waist yaw, which IS pelvis because the waist is a child of the pelvis.
+       with_base_link:=false only if no consumer speaks base_link.
   -->
   <arg name="map_name" default="current"/>
   <arg name="rviz" default="false"/>
   <arg name="motion_enabled" default="false"/>
-  <arg name="with_base_link" default="false"/>
+  <arg name="with_base_link" default="true"/>
 
   <arg name="joint_mode" default="relay"/>                 <!-- relay | dds | fake -->
   <arg name="joint_input_topic" default=""/>               <!-- required for relay -->

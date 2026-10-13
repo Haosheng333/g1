@@ -185,7 +185,7 @@ class TestVendoredUrdfAgrees(unittest.TestCase):
             seen[child] = parent
 
     def test_urdf_does_not_define_base_link(self):
-        """base_link is an unresolved integration decision - nothing may invent it."""
+        """g1_slam never publishes base_link: system_bringup owns the identity pelvis -> base_link alias."""
         edges = tf_chain.joint_edges(self.urdf)
         links = {p for p, _c, _n, _t in edges} | {c for _p, c, _n, _t in edges}
         self.assertNotIn("base_link", links)

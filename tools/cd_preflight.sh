@@ -30,7 +30,7 @@ done
 if grep -rqE "pkg=.(amcl|move_base).|odom_frame_id|base_link.*laser_frame" "$REPO/navigation/launch" "$REPO/system_bringup/launch/navigation.launch" 2>/dev/null; then
   bad "no AMCL / move_base / duplicate TF publishers in navigation launches" "grep found one"; else ok "no AMCL / move_base / duplicate TF publishers in navigation launches"; fi
 run "unit tests: slam"        bash -c "cd $REPO/slam && PYTHONPATH=src python3 -m unittest discover -s test -p 'test_*.py'"
-run "unit tests: navigation"  bash -c "cd $REPO/navigation/test && python3 -m unittest test_navigation_node test_costmap_planner_dwa test_sim_room test_robustness test_launch_files test_slam_nav_contract test_joint_bridge_table test_section_e test_section_g test_locomotion_bridge test_section_f"
+run "unit tests: navigation"  bash -c "cd $REPO/navigation/test && python3 -m unittest test_navigation_node test_costmap_planner_dwa test_sim_room test_robustness test_launch_files test_slam_nav_contract test_joint_bridge_table test_section_e test_section_g test_locomotion_bridge test_section_f test_frame_contract"
 
 echo; echo "== part 2: headless simulation + acceptance test (takes ~5-10 min)"
 pgrep -x rosmaster >/dev/null || { roscore >/tmp/cd_roscore.log 2>&1 & ROSCORE=$!; sleep 4; }

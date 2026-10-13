@@ -68,15 +68,13 @@ joint_states_timeout: 0.5
 # Seconds between repeats of the "waiting for /joint_states" warning.
 warn_period: 5.0
 
-# ---- UNRESOLVED: pelvis -> base_link ----------------------------------------
-# `pelvis` is the official URDF root and the frame this package publishes.
-# Whether navigation wants `base_link` as an alias of `pelvis`, as a
-# ground-projected frame beneath it, or under its own name is THEIR decision and
-# has not been made. Nothing here invents it.
+# ---- pelvis -> base_link: SETTLED, and NOT published by this package ----------
+# Decision (navigation team): `base_link` is an IDENTITY alias of `pelvis`, because
+# `pelvis` is the URDF root and the waist is its child, so "pelvis at zero waist
+# yaw" (how perception/ defines base_link) IS pelvis. It is published by
+# system_bringup (static_transform_publisher, with_base_link, on by default) so the
+# frame has exactly one publisher.
 #
-# Empty is the only supported value and means "not decided". The node rejects a
-# non-empty value outright rather than publishing a guessed transform. Do not
-# fill this in without sign-off from the navigation team; note that
-# perception/ already documents its results as being in `base_link`, so that
-# team is affected by the same decision.
+# This key must stay empty: the node rejects a non-empty value rather than add a
+# second publisher for base_link.
 base_link_alias: ""
