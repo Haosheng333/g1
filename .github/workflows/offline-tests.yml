@@ -44,7 +44,7 @@ jobs:
         run: PYTHONPATH=src python -m unittest discover -s test -p "test_*.py" -v
       - name: navigation tests (state machine, costmap, planner, DWA, sim room acceptance)
         working-directory: navigation/test
-        run: python -m unittest test_navigation_node test_costmap_planner_dwa test_sim_room test_robustness test_launch_files test_slam_nav_contract test_joint_bridge_table test_section_e test_section_g test_locomotion_bridge -v
+        run: python -m unittest test_navigation_node test_costmap_planner_dwa test_sim_room test_robustness test_launch_files test_slam_nav_contract test_joint_bridge_table test_section_e test_section_g test_locomotion_bridge test_section_f -v
       - name: sim map generator is reproducible
         run: |
           python tools/make_sim_map.py
