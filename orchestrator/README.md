@@ -62,6 +62,53 @@ navigation.
 **The grasp is planned in full before anything moves.** The route order puts
 `plan_grasp` ahead of every arm and hand step (doc 13.3), and a test asserts it.
 
+## Release ownership: why `run_auto_release` is not a route
+
+`/orchestrator/run_auto_release` is the one service here that does **not** run a
+route and does **not** take the execution lock.
+
+The reason is concrete. `ExecutionLock` is non-reentrant and non-blocking, and a
+handover task holds it for the whole route — including while it waits at the
+handover pose for a human to take the object. If the tactile monitor's release
+request tried to run a route, it would call `ExecutionLock.hold()`, find the lock
+held by the very task it is trying to serve, and be **refused outright**. Not a
+deadlock, because the lock is non-blocking — but refusing every legitimate
+release is just as broken.
+
+So the callback only **validates and records**:
+
+1. `handover_state.HandoverState.request_release()` checks the task state under
+   its **own** small mutex, never the execution lock.
+2. On success the validated pull is recorded as a numbered event.
+3. The task that already owns the execution lock calls `consume_pending()` and
+   performs the release under its existing ownership.
+
+There is exactly one motion path, and the service callback is not on it. The
+callback's response always carries `motion_issued=False`.
+
+A request is rejected when:
+
+| Condition | Message |
+|---|---|
+| nothing is held | `no object is recorded as held` |
+| the task is not at the handover pose | `not waiting for a handover (phase MOVING_TO_POSE…)` |
+| a release was already accepted this session | `duplicate; already accepted` |
+| one is already pending | `duplicate; already pending` |
+| release not authorized (detection-only, or motion off) | `release authorization absent` |
+| the handover has been waiting too long | `stale` |
+
+The detector therefore cannot be acted on during arm movement: `MOVING_TO_POSE`
+rejects, and only `AWAITING_PULL` accepts. Nothing releases on a timer.
+
+`test/test_handover_state.py` pins all of it, including that validation succeeds
+*while* the execution lock is held, that concurrent requests accept exactly one,
+and — by AST inspection — that `handle_release_request` references no lock, no
+route and no service proxy.
+
+**This patch does not execute the release sequence on hardware.** The
+plumbing and validation are in place; the hand-opening and retraction steps
+remain unreachable for a real run.
+
 ## The `saw_active` guard
 
 `/navigation/status` is latched and re-published every tick, so a `SUCCESS`

@@ -36,6 +36,7 @@ from std_msgs.msg import Bool, Empty, String
 from std_srvs.srv import SetBool, Trigger
 
 from orchestrator import capabilities as caps
+from orchestrator import handover_state as hs
 from orchestrator import nav_guard as ng
 from orchestrator import preflight as pf
 from orchestrator import routes as routes_mod
@@ -264,6 +265,11 @@ class OrchestratorNode:
             default_attempts=int(rospy.get_param("~default_attempts", 1)),
         )
         self.lock = ExecutionLock()
+        # Task-owned handover record. Deliberately NOT guarded by self.lock:
+        # see orchestrator/src/orchestrator/handover_state.py for why the
+        # release callback must not touch the execution lock.
+        self.handover = hs.HandoverState(
+            max_awaiting_sec=float(rospy.get_param("~max_awaiting_pull_sec", 120.0)))
         self.probe = RosProbe(float(rospy.get_param("~service_timeout_s", 1.0)))
         self.status_pub = rospy.Publisher("/orchestrator/status", String, queue_size=1, latch=True)
 
@@ -280,6 +286,43 @@ class OrchestratorNode:
         def handler(req):
             return self.run(route_name, req)
         return handler
+
+    def handle_release_request(self, req) -> RunRouteResponse:
+        """/orchestrator/run_auto_release: VALIDATE and RECORD, never actuate.
+
+        This callback deliberately does NOT acquire the execution lock and does
+        NOT run a route. A handover task already holds that lock while waiting
+        for the pull, so trying to run a route here would be refused by the very
+        task this request is meant to serve. Instead the validated event is
+        recorded against the active task, which consumes it under its existing
+        ownership. Nothing here opens a hand or moves an arm.
+        """
+        if req.route and req.route != "auto_release":
+            return RunRouteResponse(
+                success=False,
+                message="request route %r does not match this service's route "
+                        "'auto_release'" % (req.route,),
+                dry_run=True,
+            )
+
+        validation = self.handover.request_release(
+            rospy.Time.now().to_sec(), source="auto_release_monitor")
+        snap = self.handover.snapshot()
+
+        if validation.ok:
+            rospy.logwarn("[orchestrator] %s", validation.reason)
+        else:
+            rospy.logwarn("[orchestrator] release request %s", validation.reason)
+
+        return RunRouteResponse(
+            success=validation.ok,
+            message=validation.reason,
+            blockers=[] if validation.ok else [validation.reason],
+            final_step="await_pull",
+            # This path issues no motion under any circumstances.
+            motion_issued=False,
+            dry_run=not snap.release_authorized,
+        )
 
     def run(self, route_name: str, req) -> RunRouteResponse:
         route = routes_mod.resolve_route(route_name)
@@ -375,9 +418,12 @@ def main() -> None:
         ("navigate_report", "/orchestrator/run_navigate_report"),
         ("grasp", "/orchestrator/run_grasp"),
         ("deliver", "/orchestrator/run_deliver"),
-        ("auto_release", "/orchestrator/run_auto_release"),
     ):
         rospy.Service(service, RunRoute, node.make_handler(route_name))
+
+    # Not a route: the monitor's request is validated and recorded for the task
+    # that already owns the execution lock. See handle_release_request.
+    rospy.Service("/orchestrator/run_auto_release", RunRoute, node.handle_release_request)
     rospy.loginfo("[orchestrator] routes up: %s", ", ".join(sorted(routes_mod.ROUTES)))
     rospy.spin()
 
