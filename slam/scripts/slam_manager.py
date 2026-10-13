@@ -38,23 +38,7 @@ from std_msgs.msg import Bool, Empty, String
 from std_srvs.srv import Trigger, TriggerResponse
 
 from g1_slam import cloud_utils as cu
-
-SEMANTIC_TEMPLATE = """\
-# Named objects for "navigate to the <class_name>" (/navigation/navigate).
-# Coordinates are in the z-UP `map` frame (click the object in rviz with
-# Fixed Frame = map and read the pose from `rostopic echo /move_base_simple/goal`).
-#   x, y         object position [m]
-#   yaw          orientation of the object [rad] (informational)
-#   approach_yaw OPTIONAL: stand on this side of the object (direction from the
-#                object towards where the robot should stand).  If omitted the
-#                robot stands on the side it arrives from.
-waypoints: {}
-# example:
-# waypoints:
-#   table: {x: 2.5, y: 1.2, yaw: 1.57}
-#   sofa:  {x: -1.0, y: 3.4, yaw: 0.0, approach_yaw: 3.14}
-"""
-
+from g1_slam import map_store as ms
 
 def _fnum(value):
     """'auto'/''/None -> None, otherwise float."""
@@ -104,7 +88,7 @@ class SlamManager:
             self.reset_pub = rospy.Publisher("/slam/relocalizer/reset", Empty, queue_size=1)
             rospy.Subscriber("/slam/relocalizer/localized", Bool, self.localized_cb, queue_size=1)
             rospy.Service("/slam/manager/relocalize", Trigger, self.relocalize_cb)
-            self.set_status("LOCALIZATION: map '%s', not localized yet" % self.map_name)
+            self.set_status(self._localization_start_status())
         rospy.loginfo("[slam_manager] mode=%s maps_dir=%s", self.mode, self.maps_dir)
 
     # ------------------------------------------------------------------ misc
@@ -144,14 +128,6 @@ class SlamManager:
             data="MAPPING: %d scans, %d map points (voxel %.2f m)" % (self.scans, len(self.cloud), self.voxel)))
 
     # ------------------------------------------------------------ save map
-    def _unique_name(self):
-        base = self.map_name or time.strftime("g1_map_%Y%m%d_%H%M%S")
-        name, k = base, 2
-        while os.path.exists(os.path.join(self.maps_dir, name)):
-            name = "%s_%d" % (base, k)
-            k += 1
-        return name
-
     def save_cb(self, _req):
         if self.mode != "mapping":
             return TriggerResponse(success=False,
@@ -160,7 +136,20 @@ class SlamManager:
             return TriggerResponse(success=True, message=self._save())
         except Exception as exc:  # noqa: BLE001 - report every failure to the operator
             rospy.logerr("[slam_manager] save failed: %s", exc)
+            self.set_status("MAPPING: save FAILED: %s" % exc)
             return TriggerResponse(success=False, message="save failed: %s" % exc)
+
+    def _grid_runner(self, pcd_zup, out_dir, floor_up):
+        cmd = ["rosrun", "g1_slam", "pcd_to_map",
+               "--input", pcd_zup, "--name", "map", "--output-dir", out_dir,
+               "--resolution", str(self.resolution),
+               "--z-min", "%.3f" % (floor_up + self.obs_min_h),
+               "--z-max", "%.3f" % (floor_up + self.obs_max_h),
+               "--ground-z-min", "%.3f" % (floor_up - 0.30)]
+        rospy.loginfo("[slam_manager] running: %s", " ".join(cmd))
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+        if proc.returncode != 0:
+            raise ms.MapError("pcd_to_map failed (exit %d): %s" % (proc.returncode, proc.stderr.strip()[-400:]))
 
     def _save(self):
         self._merge()
@@ -176,65 +165,30 @@ class SlamManager:
                                "floor must be at z = +IMU height (0.2..3 m). Pass floor_z:=<value>."
                                % floor_down)
 
-        name = self._unique_name()
-        out = os.path.join(self.maps_dir, name)
-        os.makedirs(out)
-        pcd = os.path.join(out, "map.pcd")
-        pcd_zup = os.path.join(out, "map_zup.pcd")
-
-        cu.write_pcd(pcd, cloud)  # canonical: camera_init, z-down
-        R = cu.rpy_to_R(*self.map_to_saved_rpy)  # map <- camera_init (roll pi)
-        cu.write_pcd(pcd_zup, cu.apply_T(cu.make_T(R, [0, 0, 0]), cloud))
-
-        floor_up = -floor_down  # roll pi flips z
-        cmd = ["rosrun", "g1_slam", "pcd_to_map",
-               "--input", pcd_zup, "--name", "map", "--output-dir", out,
-               "--resolution", str(self.resolution),
-               "--z-min", "%.3f" % (floor_up + self.obs_min_h),
-               "--z-max", "%.3f" % (floor_up + self.obs_max_h),
-               "--ground-z-min", "%.3f" % (floor_up - 0.30)]
-        rospy.loginfo("[slam_manager] running: %s", " ".join(cmd))
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
-        if proc.returncode != 0:
-            raise RuntimeError("pcd_to_map failed (exit %d): %s" % (proc.returncode, proc.stderr.strip()[-400:]))
-        for f in ("map.pgm", "map.yaml"):
-            if not os.path.isfile(os.path.join(out, f)):
-                raise RuntimeError("pcd_to_map did not write %s" % f)
-
-        manifest = {
-            "map_name": name,
-            "created_at": time.strftime("%Y%m%d_%H%M%S"),
-            "slam": "FAST-LIO2 (Livox Mid-360)",
-            "sensor_config": "Livox Mid-360",
-            "pcd_file": "map.pcd",
-            "pcd_frame": "camera_init (z-down)",
-            "map_frame": "map (z-up)",
-            "map_to_saved_origin_rpy": [float(v) for v in self.map_to_saved_rpy],
-            "grid_file": "map.yaml",
-            "resolution": self.resolution,
-            "floor_z_camera_init": float(floor_down),
-            "obstacle_height_range_above_floor": [self.obs_min_h, self.obs_max_h],
-            "num_points": int(len(cloud)),
-            "voxel": self.voxel,
-        }
-        with open(os.path.join(out, "manifest.yaml"), "w") as f:
-            yaml.safe_dump(manifest, f, default_flow_style=False, sort_keys=False)
-        with open(os.path.join(out, "semantic.yaml"), "w") as f:
-            f.write(SEMANTIC_TEMPLATE)
-
-        link, tmp = os.path.join(self.maps_dir, "current"), os.path.join(self.maps_dir, ".current.tmp")
-        if os.path.lexists(tmp):
-            os.remove(tmp)
-        os.symlink(name, tmp)  # relative link
-        os.replace(tmp, link)
-
-        msg = ("saved map '%s' (%d points, floor z=%.2f) to %s ; 'current' now points to it. "
-               "Edit %s/semantic.yaml to name objects."
-               % (name, len(cloud), floor_down, out, out))
+        name = ms.unique_name(self.maps_dir, self.map_name)
+        # staging dir -> verify -> rename -> re-point `current`; any failure leaves nothing behind
+        out, info = ms.save_map(self.maps_dir, name, cloud, floor_down, self._grid_runner, self.voxel,
+                                self.resolution, self.map_to_saved_rpy, (self.obs_min_h, self.obs_max_h))
+        msg = ("saved + verified map '%s' (%d points, %.1f m^2 free, floor z=%.2f) in %s ; 'current' now points "
+               "to it. NEXT: python3 tools/check_saved_map.py %s ; then survey objects: "
+               "python3 tools/survey_semantic.py add table"
+               % (name, info["num_points"], info["free_area_m2"], floor_down, out, name))
         self.set_status("MAPPING: " + msg)
         return msg
 
     # ------------------------------------------------- localization mode
+    def _localization_start_status(self):
+        """Check the saved map BEFORE the robot depends on it; the flag stays False if it is unusable."""
+        path = os.path.join(self.maps_dir, self.map_name or "current")
+        problems, info = ms.verify_map_dir(path)
+        if problems:
+            rospy.logerr("[slam_manager] map '%s' is NOT usable: %s", self.map_name, "; ".join(problems))
+            return "LOCALIZATION: map '%s' unusable: %s" % (self.map_name, "; ".join(problems))
+        if not info.get("semantic"):
+            rospy.logwarn("[slam_manager] %s/semantic.yaml has no waypoints: /navigation/navigate will reject "
+                          "every object name. Survey them: python3 tools/survey_semantic.py add <name>", path)
+        return "LOCALIZATION: map '%s' verified (%d points), not localized yet" % (self.map_name, info.get("num_points", 0))
+
     def localized_cb(self, msg):
         self.state_pub.publish(Bool(data=bool(msg.data)))
         self.set_status("LOCALIZED to '%s'" % self.map_name if msg.data

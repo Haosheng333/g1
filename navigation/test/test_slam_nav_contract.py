@@ -39,9 +39,9 @@ def _write(path, text):
 
 
 def slam_semantic_template():
-    with open(SLAM_MANAGER) as f:
-        src = f.read()
-    return re.search(r'SEMANTIC_TEMPLATE = """\\\n(.*?)"""', src, re.S).group(1)
+    """The semantic.yaml that save_map() really writes into a new map folder."""
+    from g1_slam import semantic_store as ss
+    return ss.empty_file_text()
 
 
 def write_saved_map(folder):
@@ -79,12 +79,12 @@ class TestSlamNavContract(unittest.TestCase):
         self.assertEqual((res, ox, oy), (RES, ORIGIN[0], ORIGIN[1]))
         # grid_composer defaults: danger 0.25, risk 0.50, hole fill 3
         self.tiers = gu.compose_tiers(grid, res, danger_m=0.25, risk_m=0.50, hole_fill_iterations=3)
-        tmpl = slam_semantic_template()
-        # the template ships with `waypoints: {}`; a user fills it in following the commented example
-        filled = tmpl.replace("waypoints: {}\n", "").replace("# waypoints:\n#   table:", "waypoints:\n  table:")
-        filled = filled.replace("#   sofa:", "  sofa:")
+        # the file ships with `waypoints: {}`; surveying (tools/survey_semantic.py) fills it through semantic_store
+        from g1_slam import semantic_store as ss
         self.sem_path = os.path.join(self.dir.name, "semantic.yaml")
-        _write(self.sem_path, filled)
+        _write(self.sem_path, slam_semantic_template())
+        ss.add(self.sem_path, "table", 2.5, 1.2, 1.57)
+        ss.add(self.sem_path, "sofa", -1.0, 3.4, 0.0, approach_yaw=3.14)
 
     def tearDown(self):
         self.dir.cleanup()
