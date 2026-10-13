@@ -80,9 +80,55 @@ plus `training_workspace`.
 | **Stow / carry pose** | **absent** | Needed to carry an object while walking without the arm swinging into the body or the environment. |
 | **Grasp retract path — NOT reusable for handover** | checked | `retract = lift.copy()`, `x = retract_target_x (0.15)`, `rz = atan2(y, x)` — so it inherits y and z from the **lift** pose, which derives from `object_xyz`. And `_cartesian_segment(..., start_pose=poses['lift'], ...)` means it **starts at the lift pose**, just above where the object sat on the table. After a handover the arm is at the handover pose, so replaying it would command a jump to the lift pose. It is an object-relative grasp segment, not a homing move. |
 | `nominal_environment_geometry` | `provisional: true` | Flagged provisional in the config itself; table heights feed the training workspace. |
-| Frame contract | unresolved | see `orchestrator/README.md` |
+| Frame contract | **navigation's half CLOSED** | PR #10 / `docs/FRAME_CONTRACT.md`: `base_link` is an identity alias of `pelvis`, published once by `system_bringup` with `with_base_link` now **on by default**. Their reasoning is right and worth restating: the pelvis is the waist's *parent*, so it does not rotate with the waist, and "pelvis at zero waist yaw" is `pelvis` at **every** waist angle. Two items remain, both ours or perception's — see below. |
 | Collision meshes | missing | two `*_wrist_roll_rubber_hand.STL` |
 | Tactile schema + thresholds | unconfirmed | see `handover/README.md` |
+
+### What the frame contract leaves open
+
+PR #10 closes navigation's side and names the two remaining items itself:
+
+**(a) The 10 mm URDF disagreement — measurement, not a file question.** Their
+`tools/check_urdf_agreement.py` reproduces exactly what this branch found:
+
+```
+slam          pelvis -> torso_link at zero waist yaw = (-0.0040, 0.0000, 0.0440)
+arm_planning  pelvis -> torso_link at zero waist yaw = (-0.0040, 0.0000, 0.0540)
+[DIFFER] dz=0.0100 m (tolerance 0.0010 m)
+```
+
+They prescribe measuring the standing robot and correcting the wrong URDF and
+its config. That supersedes the workaround this branch previously suggested
+(composing with arm_planning's own 0.054 constant): their point is correct that
+a TF lookup is the right mechanism because it carries the **live** waist yaw,
+and a hand-written offset does not. The conversion should therefore be
+`lookup_transform("torso_link", "base_link", Time(0))` — but note it inherits
+the 10 mm error until the measurement is done, which their doc also states.
+
+**(b) Implementing that conversion.** Still ours. It belongs in `arm_planning`
+(the frame's owner), not in `orchestrator`.
+
+**(c) A third item neither doc covers — perception's extrinsics, not the frame.**
+`base_link ≡ pelvis` is exact for the *frame*. But `perception` computes the
+object position with a **hard-coded** optical→base transform (`Extrinsics()` in
+`m1_perception.py`, "not TF"), and the D435 is mounted on `torso_link`
+(`d435_joint`'s parent), which **does** rotate with the waist. So at nonzero
+waist yaw the camera has physically moved while the hard-coded transform assumes
+it has not: the frame label stays correct and the reported point is wrong.
+Either perception must take its camera pose from TF, or the waist must be held
+at ≈0 whenever perception is used. **Question for the perception owner.** Until
+answered, a grasp planned from a perception point while the waist is turned is
+not trustworthy.
+
+### Pending runtime edit, not yet applied
+
+`orchestrator/src/orchestrator/capabilities.py`'s `FRAME_CONTRACT` text now
+says something false — that "slam refuses to publish `pelvis -> base_link`" and
+that navigation "has not decided". `docs/FRAME_CONTRACT.md` explicitly asks the
+orchestrator team to update that text and its `unresolved` flag "once (a) and
+(b) are done". (a) and (b) are **not** done, so the capability must stay
+unresolved and `grasp` must stay NOT_READY; only the wording needs correcting.
+That edit is held for review rather than applied silently.
 
 **Questions for the arm_planning / arm_control owners** (each blocks a step
 above, and none can be answered from the repo):
@@ -212,9 +258,9 @@ presets, navigation, perception.
 
 Note `deliver` gaining `arm_planning` + the frame contract means **it inherits
 the frame blocker**: once wired, `run_deliver` is NOT_READY for a real run on
-the same grounds as `run_grasp`, until the frame contract and meshes are
-resolved. That is correct, not a regression — it reflects that moving the arm
-to a handover pose needs a planner.
+the same grounds as `run_grasp`, until the 10 mm measurement, the meshes and
+the conversion are resolved. That is correct, not a regression — it reflects
+that moving the arm to a handover pose needs a planner.
 
 ---
 
