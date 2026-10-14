@@ -1,11 +1,19 @@
 # Grasp-and-deliver: status classification and proposed delivery flow
 
-**Status: PROPOSAL. Nothing in section 3 onward is implemented.** Real execution
-of grasp and delivery remains NOT_READY.
+**Status: the sequencing in section 3 is now IMPLEMENTED and exercised offline.**
+Real execution of grasp and delivery remains NOT_READY: three steps are blocked
+on poses that do not exist, and the frame contract is unfinished.
 
-This document exists because an earlier description of the release path
-overstated it. Section 1 classifies every step by what is actually true;
-sections 3–6 propose the missing design without implementing it.
+| Category | What |
+|---|---|
+| **A. exercised offline with fake backends** — the sequencing logic is real and run, but no real adapter was involved | the 14-step `deliver` order; `require_held_object`; `record_held_object`; the single-token handshake; `await_pull` consuming the event **while the route holds the execution lock**; `disarm_monitor` before `release_hand`; the command-ack / settled / transfer distinction; `release_permitted` refusing a resume into release; `retraction_allowed` refusing on a bare ack and while `UNCERTAIN`; `mark_done`; unconditional cleanup incl. disarming the monitor; token staleness. **34 tests** in `test_delivery_flow.py` drive the real `run_route()` with a fake backend and injected clock. |
+| **B. exercised offline through an IN-PROCESS service bus** — both production nodes' Python objects, real detector, real handlers, but **rospy is a stub**: no ROS master, no serialisation, no network, no `.srv` marshalling, no concurrency, no timeouts, no hardware | a synthetic tactile pull driving the **real** detector to a verified trigger, the **real** monitor echoing the orchestrator's token into the **real** validator; the handshake window, arm failure, echo mismatch, cancellation, re-arming, old tokens, duplicates, disarm, timeout, tokenless, wrong side, detection-only. **24 tests** in `test_monitor_integration.py`. **This is logic validation, not ROS transport validation and not hardware validation.** A real deployment additionally has to survive message serialisation, service-call latency and failure, node restarts and clock behaviour, none of which these tests touch. |
+| **C. real adapters that have never run against their service** | `navigate`, `enable_motion`, `execute_segment` (arm_control), `release_hand` (hand_control), `arm_monitor`/`disarm_monitor` over ROS, `detect_object` (perception). The client code exists and the launch files resolve; **no call has ever reached the real server**, because none of those nodes runs on the bench. Treat as unverified. |
+| **D. still missing entirely** | the **handover**, **stow** and **home** poses — three steps fail with an explicit `NOT_READY`; the perception→planner TF conversion; and physical verification of object transfer, which nothing in this workspace can observe. |
+
+Categories A and B are code this branch runs. Category C is code this branch
+*wrote* but has never executed end to end. Do not read a green test suite as
+evidence for category C.
 
 ---
 
@@ -65,6 +73,25 @@ exists in no route.
 
 ---
 
+## 1b. Tactile units are not established by reading the device
+
+`main_mod.pyi` gives the authoritative field list — `TouchFingerItem` with
+`normal_force1/2/3`, `tangential_force1/2/3`, `tangential_direction1/2/3`,
+`self_proximity1/2`, `mutual_proximity`, `status`, all `builtins.int`. That
+settles the *schema*. It does **not** settle the *units*.
+
+Reading numbers off the device does not establish physical units either. A
+stream of integers tells you the range and the noise, not whether a count is
+newtons, millinewtons, a raw ADC value, or a vendor-scaled index — nor whether
+the mapping is linear, nor where zero is. `tangential_direction` is an `int`
+with no documented range, so even treating it as an angle is an assumption.
+
+Units require **vendor documentation or a calibration against a known
+reference** (a mass, a force gauge). Until then the detector treats these as
+`force_like` counts and all thresholds are *counts*, valid only for the
+specific hand they were recorded on. That is why `release_threshold` and
+`stable_tolerance` have no defaults.
+
 ## 2. Unresolved inputs — checked, not assumed
 
 Searched `arm_planning/config`, `arm_planning/scripts`, `arm_control`,
@@ -80,7 +107,7 @@ plus `training_workspace`.
 | **Stow / carry pose** | **absent** | Needed to carry an object while walking without the arm swinging into the body or the environment. |
 | **Grasp retract path — NOT reusable for handover** | checked | `retract = lift.copy()`, `x = retract_target_x (0.15)`, `rz = atan2(y, x)` — so it inherits y and z from the **lift** pose, which derives from `object_xyz`. And `_cartesian_segment(..., start_pose=poses['lift'], ...)` means it **starts at the lift pose**, just above where the object sat on the table. After a handover the arm is at the handover pose, so replaying it would command a jump to the lift pose. It is an object-relative grasp segment, not a homing move. |
 | `nominal_environment_geometry` | `provisional: true` | Flagged provisional in the config itself; table heights feed the training workspace. |
-| Frame contract | **navigation's half CLOSED** | PR #10 / `docs/FRAME_CONTRACT.md`: `base_link` is an identity alias of `pelvis`, published once by `system_bringup` with `with_base_link` now **on by default**. Their reasoning is right and worth restating: the pelvis is the waist's *parent*, so it does not rotate with the waist, and "pelvis at zero waist yaw" is `pelvis` at **every** waist angle. Two items remain, both ours or perception's — see below. |
+| Frame contract | **navigation's half CLOSED** | PR #10 / `docs/FRAME_CONTRACT.md`: `base_link` is an identity alias of `pelvis` at **every** waist angle — the pelvis is the waist's *parent*, so it never rotates with the waist — published once by `system_bringup` with `with_base_link` now **on by default**. `base_link` carries **no** zero-waist limitation; that limitation belongs entirely to perception's hard-coded camera extrinsics, see (c) below. Two items remain, both ours or perception's. |
 | Collision meshes | missing | two `*_wrist_roll_rubber_hand.STL` |
 | Tactile schema + thresholds | unconfirmed | see `handover/README.md` |
 
@@ -88,8 +115,8 @@ plus `training_workspace`.
 
 PR #10 closes navigation's side and names the two remaining items itself:
 
-**(a) The 10 mm URDF disagreement — measurement, not a file question.** Their
-`tools/check_urdf_agreement.py` reproduces exactly what this branch found:
+**(a) The 10 mm `torso_link` difference — a frame-definition question, not
+necessarily a wrong file.** `tools/check_urdf_agreement.py` reports:
 
 ```
 slam          pelvis -> torso_link at zero waist yaw = (-0.0040, 0.0000, 0.0440)
@@ -97,18 +124,51 @@ arm_planning  pelvis -> torso_link at zero waist yaw = (-0.0040, 0.0000, 0.0540)
 [DIFFER] dz=0.0100 m (tolerance 0.0010 m)
 ```
 
-They prescribe measuring the standing robot and correcting the wrong URDF and
-its config. That supersedes the workaround this branch previously suggested
-(composing with arm_planning's own 0.054 constant): their point is correct that
-a TF lookup is the right mechanism because it carries the **live** waist yaw,
-and a hand-written offset does not. The conversion should therefore be
-`lookup_transform("torso_link", "base_link", Time(0))` — but note it inherits
-the 10 mm error until the measurement is done, which their doc also states.
+An earlier version of this document said "correct the wrong URDF". That
+overstated it. The evidence does not establish that either file is physically
+wrong:
 
-**(b) Implementing that conversion.** Still ours. It belongs in `arm_planning`
-(the frame's owner), not in `orchestrator`.
+* the **net** `pelvis -> left_shoulder_pitch` is **identical** in both
+  (`0.29178 m`), and so is `pelvis -> d435`. Both files therefore describe the
+  same physical arm and the same camera mount;
+* they differ only in where the intermediate **label** `torso_link` is placed,
+  and each is internally consistent with its own consumers —
+  `arm_kinematics.yaml` matches its URDF (`torso_height - pelvis_height = 0.054`)
+  and the collision probe hard-codes the matching `-0.054`;
+* so this is most likely **two different modelling conventions for the same
+  robot**, not a manufacturing or transcription error.
 
-**(c) A third item neither doc covers — perception's extrinsics, not the frame.**
+That matters for the fix. A tape measure settles it **only if** `torso_link`'s
+origin corresponds to an identifiable physical feature (a joint axis, a machined
+face). If it is an arbitrary modelling datum, measuring cannot say which z is
+"right", and the correct resolution is instead to **declare which convention
+each consumer uses and convert explicitly**, or to align the two files on one
+stated convention.
+
+Either way the practical consequence is unchanged: a planner target derived
+through TF (whose `torso_link` comes from the slam URDF) is offset by up to
+10 mm in z from what `arm_kinematics.yaml` expects, which is the size of the
+planner's own tolerance. **Question for arm_planning: is `torso_link`'s origin a
+physical feature that can be measured, or a modelling datum?** That decides
+whether this is a measurement or a convention declaration.
+
+**(b) Implementing that conversion.** Still ours, and it belongs in
+`arm_planning` (the frame's owner), not in `orchestrator`.
+
+**It must not be wired up before (a) is settled.** The TF tree's `torso_link`
+comes from the slam URDF (z = 0.044); the planner's geometry, its collision
+probe and its trained checkpoints all use the other convention (z = 0.054).
+Feeding a TF-derived target straight into the planner therefore introduces a
+systematic 10 mm z offset — at the planner's own tolerance — in a direction
+nothing in the pipeline would flag. **The conversion is only safe once the TF
+`torso_link` and the planner's `torso_link` are known to be the same
+convention**, either by aligning the two files or by applying a declared,
+tested offset between them. Until then this stays a preflight blocker.
+
+**(c) A separate, independent requirement — perception's moving camera.**
+This is *not* satisfied by resolving (a) or (b): even with both URDFs aligned
+and the conversion implemented, the input to that conversion would still be
+wrong whenever the waist is turned.
 `base_link ≡ pelvis` is exact for the *frame*. But `perception` computes the
 object position with a **hard-coded** optical→base transform (`Extrinsics()` in
 `m1_perception.py`, "not TF"), and the D435 is mounted on `torso_link`
@@ -120,14 +180,17 @@ at ≈0 whenever perception is used. **Question for the perception owner.** Unti
 answered, a grasp planned from a perception point while the waist is turned is
 not trustworthy.
 
-### Pending runtime edit, not yet applied
+### Runtime wording corrected
 
-`orchestrator/src/orchestrator/capabilities.py`'s `FRAME_CONTRACT` text now
-says something false — that "slam refuses to publish `pelvis -> base_link`" and
-that navigation "has not decided". `docs/FRAME_CONTRACT.md` explicitly asks the
-orchestrator team to update that text and its `unresolved` flag "once (a) and
-(b) are done". (a) and (b) are **not** done, so the capability must stay
-unresolved and `grasp` must stay NOT_READY; only the wording needs correcting.
+`orchestrator/src/orchestrator/capabilities.py`'s `FRAME_CONTRACT` text used to
+say something false — that "slam refuses to publish `pelvis -> base_link`" and
+that navigation "has not decided". `docs/FRAME_CONTRACT.md` asked the
+orchestrator team to correct that text once (a) and (b) were done. (a) and (b)
+are **not** done, so the capability **stays unresolved** and `grasp` stays
+NOT_READY; only the wording changed. It now states that `base_link` is an
+identity alias of `pelvis` at every waist angle, that the 10 mm may be two
+different frame *definitions* rather than a wrong URDF, and that perception's
+extrinsics are a separate requirement that owns the zero-waist limitation.
 That edit is held for review rather than applied silently.
 
 **Questions for the arm_planning / arm_control owners** (each blocks a step

@@ -21,18 +21,20 @@ because the schema it would need is unconfirmed. These are the verified facts:
 | This repo's existing SDK contract uses **no tactile call** | `src/hand_control/revo_hand_link.py` header: only `auto_detect`, `init_from_detected`, `get_hand_type`, `set_finger_positions`, `get_finger_positions`, `close_device_handler` |
 | Revo2 ships in **four variants**, and **Revo2 Basic has no sensor at all** | vendor docs: Basic / Touch (capacitive) / TouchForce3D / TouchArrayPressure |
 | Capability probes exist, so the variant **can** be identified at runtime | `is_capacitive_touch()`, `is_pressure_touch()`, `is_force3d_touch()`, `is_array_pressure_touch()` |
-| **`bc-stark-sdk` requires Python ≥ 3.9. ROS Noetic is Python 3.8.** | vendor docs state "3.9 ~ 3.12"; PyPI reports `Requires-Python >=3.9` for the project |
+| **`bc-stark-sdk` 1.x DOES support Python 3.8** — the version conflict is *not* a blocker | PyPI's **per-release** JSON gives `requires_python: ">=3.8"` for the whole 1.x line, with `cp38` wheels published. The project-level `Requires-Python >=3.9` that an earlier version of this README cited is the **latest** release's value, not 1.x's. `requirements.txt`'s `pip3 install "bc-stark-sdk<2"` is therefore correct for Noetic. |
 | Exact field list, units, channel layout and rate are **not published** | the authoritative source is the SDK's `main_mod.pyi`, which we do not have |
 
-**The Python-version conflict is the blocking one.** `hand_control/requirements.txt`
-currently advises `pip3 install "bc-stark-sdk<2"` as the Noetic workaround, but
-PyPI reports `Requires-Python >=3.9` for the whole project, so that may no
-longer install on 3.8. Someone has to establish how the SDK is to be run at all
-on this robot before tactile acquisition in `hand_control` can be written.
+**The schema is the blocking one, and units are part of it.** A raw reading from
+the device does **not** establish a physical unit: a number arriving over the
+wire could be a count, a normalised fraction or a calibrated force, and nothing
+on the device says which. Units require **vendor documentation or a
+calibration** — never inference from observed values. Until the field list and
+units are established, tactile acquisition in `hand_control` cannot be written.
 
 Because of this, **no tactile publisher was added to `hand_control`**: writing
-one against an unverified API, for a hand whose variant is unconfirmed, on a
-Python version the SDK does not support, would be fabricated hardware support.
+one against an unverified API, for a hand whose variant is unconfirmed, and
+thresholding values whose units nobody can state, would be fabricated hardware
+support.
 
 ### What is needed to lift NOT_READY
 
@@ -44,9 +46,9 @@ Python version the SDK does not support, would be fabricated hardware support.
    `BrainCoTech/brainco-hand-sdk`.
 3. **One sample frame**, printed raw: the field names, their types, how the five
    fingers are indexed, the units, and the observed rate.
-4. **How the SDK runs on this robot** given Python 3.8 vs ≥ 3.9: a 3.9+
-   interpreter alongside Noetic, a `rospy`-free bridge process, or a confirmed
-   1.x wheel that genuinely installs on 3.8.
+4. **Confirmation that the 1.x wheel installs on this robot's 3.8**, which the
+   per-release metadata says it should (`pip3 install "bc-stark-sdk<2"`). Only
+   if that fails does the interpreter question return.
 
 Items 1–3 are what the `tactile:` block in `config/auto_release.yaml` needs.
 Item 4 decides where the publisher can live.
@@ -57,9 +59,9 @@ Item 4 decides where the publisher can live.
 
 | Service | Type | Action |
 |---|---|---|
-| `/auto_release_monitor/arm` | `std_srvs/Trigger` | start monitoring (this node's side) |
+| `/auto_release_monitor/arm` | `handover/ArmMonitor` | start monitoring: `side` + `session_token` in, the token echoed back |
 | `/auto_release_monitor/disarm` | `std_srvs/Trigger` | back to `IDLE`; always safe |
-| `/auto_release_monitor/<side>/arm` | `std_srvs/Trigger` | side-qualified alias |
+| `/auto_release_monitor/<side>/arm` | `handover/ArmMonitor` | side-qualified alias |
 | `/auto_release_monitor/<side>/disarm` | `std_srvs/Trigger` | side-qualified alias |
 
 | Topic | Type | Meaning |
@@ -177,7 +179,9 @@ asserts that zero service clients were built. Calibrate in this mode.
 roslaunch handover auto_release_monitor.launch side:=right
 rostopic echo -n1 /auto_release_monitor/ready     # false until the blockers above are cleared
 rostopic echo /auto_release_monitor/event
-rosservice call /auto_release_monitor/arm         # refused, with the reason
+# Arming needs the side and the orchestrator's session token; it is refused
+# without one, and refused again while the detector is NOT_READY.
+rosservice call /auto_release_monitor/arm "{side: right, session_token: abc123}"
 ```
 
 ## Calibration

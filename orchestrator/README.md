@@ -88,69 +88,104 @@ So the callback only **validates and records**:
 There is exactly one motion path, and the service callback is not on it. The
 callback's response always carries `motion_issued=False`.
 
-## ⚠ The delivery route does not consume handover events
+## The delivery route and the handover event
 
-**End-to-end delivery is incomplete.** An earlier version of this section
-described step 3 above in the present tense, which overstated it. The
-consumer half was never written:
+`deliver` is now 14 steps and **does** consume the validated pull event:
 
-| `HandoverState` method | callers outside its own module and tests |
+```
+require_held_object -> await_localization -> enable_motion -> navigate
+  -> plan_handover_pose -> execute_handover_pose -> settle_handover
+  -> arm_monitor -> await_pull -> disarm_monitor -> release_hand
+  -> confirm_released -> settle_recipient -> execute_retract_home
+```
+
+`await_pull` runs **inside the route, while it holds the execution lock**, and
+polls `HandoverState.consume_pending()`. The polling loop lives in
+`sequencer.Backend.await_pull`, so the real and fake backends share it and the
+integration tests drive the production code rather than a copy.
+
+| Guarantee | Where |
 |---|---|
-| `begin()` | **0** |
-| `mark_awaiting_pull()` | **0** |
-| `mark_releasing()` | **0** |
-| `mark_released()` | **0** |
-| `consume_pending()` | **0** |
-| `abandon()` | **0** |
-| `request_release()` | 2 (the monitor, and this service) |
+| a delivery cannot start, or resume, without a grasp having recorded an object | `require_held_object` → `HandoverState.require_held_object()` |
+| the detector is armed only after the arm moved and settled | step order: `execute_handover_pose` → `settle_handover` → `arm_monitor` |
+| disarm strictly before release | step order, pinned by a test |
+| the hand cannot open without a consumed pull, even on resume | `release_permitted()` |
+| a failed or unclear release marks `UNCERTAIN` and **blocks retraction** | `release_hand`, `confirm_released`, `retraction_allowed()` |
+| a timeout or cancel releases nothing and keeps the object held | `await_pull` returns failure; cleanup disarms |
+| no route can exit leaving the detector armed | `disarm_monitor_cleanup()` in the `finally` |
 
-Consequences, all verified rather than inferred:
+### A successful release is not a verified transfer
 
-* Nothing ever puts the task into `AWAITING_PULL`, so `request_release()`
-  **always** returns `rejected: no object is recorded as held`. That is
-  structural, not a transient state.
-* `consume_pending()` is unreachable from the production path.
-* The `deliver` route is four steps and stops at `arm_handover`:
-  `await_localization → enable_motion → navigate → arm_handover`. It has no
-  await-pull, release, retract or home step.
-* The `auto_release` route (`release_hand`, `disarm_handover`) is **orphaned**:
-  `/orchestrator/run_auto_release` is bound to `handle_release_request`, and
-  `make_handler` covers only `navigate_report`, `grasp` and `deliver`, so no
-  service invokes that route. Its two steps are also in the reverse of the
-  specified order (release before disarm).
-* `final_step="await_pull"` in the release response is a label, not a step that
-  exists in any route.
+`hand_control`'s `release` preset sets neither `require_settle` nor
+`expect_contact`, so `/hand_{side}/release` returns success as soon as the open
+command is accepted — `hand_node._execute` explicitly returns
+*"release commanded, did not settle ... expected if holding an object"*. So
+`confirm_released` records **`RELEASE_COMMANDED`**, never a verified transfer,
+and the response's `transfer_verified` field stays false. Upgrading that
+evidence needs `require_settle: true` on the release preset, which is
+hand_control's call.
 
-Of the specified release sequence `disarm → release → confirm → retract →
-home`, **none of the five is implemented in the delivery path**.
+### Event identity: one authoritative token
 
-`docs/DELIVERY_FLOW.md` holds the status classification, the proposed route,
-the unresolved inputs it depends on, and the integration tests that would
-demonstrate it. Until that lands, real delivery stays NOT_READY.
+`handover_state.new_session_token()` is the **only** place a token is created.
+The orchestrator calls it once per arming, sends it to the monitor in
+`handover/ArmMonitor.srv` (`side` + `session_token`), checks the monitor echoed
+that exact value, and only then enters `AWAITING_PULL`. The monitor stores it
+and echoes it in `event_token` on its release request; it never generates one.
 
-A request is rejected when:
+So there is exactly one token per handover session, and a request quoting an
+old one — a pull detected before a re-arm and delivered late — is refused as
+stale. A tokenless request is refused outright: the request carries no origin
+time, so stamping its receipt time would show only when it arrived, not which
+handover detected it.
 
-| Condition | Message |
-|---|---|
-| nothing is held | `no object is recorded as held` |
-| the task is not at the handover pose | `not waiting for a handover (phase MOVING_TO_POSE…)` |
-| a release was already accepted this session | `duplicate; already accepted` |
-| one is already pending | `duplicate; already pending` |
-| release not authorized (detection-only, or motion off) | `release authorization absent` |
-| the handover has been waiting too long | `stale` |
+Ordering matters and is deliberate: the token is created, the monitor confirms
+it, and `mark_awaiting_pull` happens last, so there is no window in which a
+release could be validated against a monitor that is not yet armed.
 
-The detector therefore cannot be acted on during arm movement: `MOVING_TO_POSE`
-rejects, and only `AWAITING_PULL` accepts. Nothing releases on a timer.
+`test_monitor_integration.py` exercises this through the **real** monitor and
+the **real** validator in one process: a synthetic pull drives the real
+detector, the real monitor sends a real request, and the real validator accepts
+it — plus old-token-after-rearm, duplicates, disarm and timeout.
 
-`test/test_handover_state.py` pins all of it, including that validation succeeds
-*while* the execution lock is held, that concurrent requests accept exactly one,
-and — by AST inspection — that `handle_release_request` references no lock, no
-route and no service proxy.
+### Release completion: three different things
 
-**This patch does not execute the release sequence on hardware.** The
-validation half is implemented and tested; the producer and consumer halves
-are absent, so the hand-opening and retraction steps are unreachable for a
-real run.
+| State | What established it | Retraction |
+|---|---|---|
+| `RELEASE_COMMANDED` | `/hand_{side}/release` returned success — an **actuation acknowledgement**. `revo_hand_link.wait_until_settled` *does* poll fresh `read_positions()` against the target within `settle_tolerance` (deadline `settle_timeout_s`), but the result is not exposed; the release preset leaves `require_settle` **absent**, so `_execute` does **not** fail on a settling timeout and returns *"release commanded, did not settle"* as success. | **Refused, with no override.** A command ack is not physical completion, and retracting next to a person who may still hold the object needs better evidence. |
+| `RELEASE_SETTLED` | Settling **confirmed from checkable evidence** in the service result — a structured flag, or feedback positions the orchestrator compared itself. **Unreachable today**, and deliberately not settable from an orchestrator config flag: that would be this package asserting a fact about hand_control's YAML it cannot observe. | Allowed. |
+| **object transfer verified** | **Nothing in this workspace can observe this.** There is no state for it; the `transfer_verified` response field exists and is **always false**. | — |
+
+`UNCERTAIN` (release failed, raised, or outcome unknown) refuses retraction
+outright and asks for human inspection.
+
+### Known gaps are PREFLIGHT blockers, not step-time surprises
+
+Every known-missing requirement is declared in the route's `requires`, so
+preflight refuses before any motion. Finding out there is no home pose at
+`execute_retract_home` would mean finding out **after the hand had already
+opened**.
+
+`deliver` requires `handover_pose`, `release_completion` and `home_pose`;
+`grasp` requires `stow_pose`. With every service and flag present, preflight
+still reports 4 blockers for `deliver` and 2 for `grasp`.
+
+The step-level checks are kept as well, for runtime failure handling: a
+capability can be satisfied at preflight and still fail mid-route, and the step
+must refuse rather than proceed.
+
+### The handshake window
+
+The monitor's arm handler can return before the orchestrator calls
+`mark_awaiting_pull`, so a pull detected in that gap would once have been
+rejected as "not waiting" and silently lost, leaving the task waiting for a pull
+that already happened. The `ARMING` phase closes it: the token is issued and the
+phase entered **before** the monitor is called, a correctly-tokened request is
+**queued** there, and `mark_awaiting_pull` preserves it. If arming then fails,
+the echo mismatches, or the task is cancelled, `abandon()` drops the queued
+event and clears the token, so nothing can be released against a monitor that is
+not armed. The detector's own post-arm suppression (>= 1.0 s) is a second line
+of defence, not the mechanism.
 
 ## The `saw_active` guard
 
@@ -168,15 +203,28 @@ testable; it adds no navigation logic.
 The `grasp` route requires the `frame_contract` capability, which is declared
 **unresolved** — no runtime state can clear it:
 
-* `perception` reports object positions in `base_link`, documented as `pelvis`
-  at zero waist yaw.
-* `arm_planning` takes targets in `torso_link` (doc 2.3, 13.4).
-* `slam` refuses to publish `pelvis -> base_link` at all
-  (`g1_tf.yaml`: `base_link_alias: ""`, marked UNRESOLVED pending the
-  navigation team).
+Navigation's half is **settled** (`docs/FRAME_CONTRACT.md`, PR #10):
+`base_link` is an identity alias of `pelvis` at **every** waist angle — the
+pelvis is the waist's *parent*, so it never rotates with the waist — published
+once by `system_bringup` with `with_base_link` on by default (`g1_slam` never
+publishes it). What remains:
+
+* `perception` reports object positions in `base_link`; `arm_planning` takes
+  targets in `torso_link` (doc 2.3, 13.4), and **nobody has implemented the
+  conversion**. It is one TF lookup, `torso_link <- base_link`, which carries
+  the live waist yaw, and it belongs in `arm_planning`, not here.
 * The two vendored URDFs place `torso_link` **10 mm** apart
   (`waist_yaw_joint` z = 0.044 in slam's mode-10 URDF vs 0.054 in
-  arm_planning's) — the size of arm_planning's own 0.01 m tolerance.
+  arm_planning's) — the size of arm_planning's own 0.01 m tolerance. This may
+  be two different *definitions* of the frame rather than a wrong URDF, so the
+  TF `torso_link` must be shown to match the planner's convention before a
+  target is routed through it; run `tools/check_urdf_agreement.py`.
+
+A **separate**, independent requirement, not part of the frame contract:
+`perception`'s camera extrinsics are hard-coded for a torso-mounted D435 that
+**does** rotate with the waist, so perception's output is only valid near zero
+waist yaw regardless of how `base_link` is defined. The zero-waist limitation
+belongs to those extrinsics, never to `base_link`.
 
 Converting a perception point into a planner target would be a guess, so this
 package does not. A dry run still traverses the whole grasp route, so the
