@@ -1,231 +1,257 @@
-# Tactile Handover for Unitree G1
+# handover
 
-This ROS1 catkin package adds a handover coordinator, a tactile release monitor, and mock dependencies to the supplied G1 project. The original Desktop checkout is unchanged.
+Tactile-triggered handover: detect a human taking the object the robot is
+holding, and ask the **orchestrator** to release it.
 
-**Validation:** five pure Python detector tests pass. ROS compilation, ROS integration, trained-model loading, and physical robot tests have not been performed.
+**Detection only.** This package never opens the hand and never moves the arm.
+Detection and actuation are split so a sensor glitch cannot drop an object, and
+so the release passes the orchestrator's own state validation.
+`test/test_node_contract.py` and `test/test_detection_only.py` enforce it.
 
-## What the module does
+---
 
-After navigation reaches the recipient and the robot stops, this module extends the arm, waits for someone to take the bottle, opens the hand, and retracts the arm.
+## ⚠ Status: NOT_READY — the tactile API could not be verified
 
-```text
-Navigation confirms arrival and standstill
-    -> Orchestrator confirms a verified grasp
-    -> Handover requests all motion paths
-    -> Arm executes staging and reaching paths
-    -> Wait 1 second
-    -> Tactile monitor establishes a baseline and detects a pull
-    -> Coordinator disarms monitoring and opens the hand
-    -> Wait 1.5 seconds
-    -> Arm executes retraction and home paths
-    -> Publish DONE
-```
+The detector logic is complete and tested. The **hardware path is disabled**,
+because the schema it would need is unconfirmed. These are the verified facts:
 
-The monitor only requests release. It never commands the hand or arm directly.
-
-## Beginner's guide to ROS terms
-
-| Term | Meaning in this project |
+| Fact | Evidence |
 |---|---|
-| Node | A running program, such as the tactile monitor |
-| Topic | A stream of messages, such as fingertip readings |
-| Service | A request and response, such as asking the hand to open |
-| Package | A folder of related ROS code and its build configuration |
-| Launch file | A configuration that starts several nodes together |
-| Mock | A software substitute for a real device or service |
+| `bc_stark_sdk` is **not installed** here (host or container), and no vendor SDK source is on disk | `python3 -c "import bc_stark_sdk"` fails in both |
+| This repo's existing SDK contract uses **no tactile call** | `src/hand_control/revo_hand_link.py` header: only `auto_detect`, `init_from_detected`, `get_hand_type`, `set_finger_positions`, `get_finger_positions`, `close_device_handler` |
+| Revo2 ships in **four variants**, and **Revo2 Basic has no sensor at all** | vendor docs: Basic / Touch (capacitive) / TouchForce3D / TouchArrayPressure |
+| Capability probes exist, so the variant **can** be identified at runtime | `is_capacitive_touch()`, `is_pressure_touch()`, `is_force3d_touch()`, `is_array_pressure_touch()` |
+| **`bc-stark-sdk` 1.x DOES support Python 3.8** — the version conflict is *not* a blocker | PyPI's **per-release** JSON gives `requires_python: ">=3.8"` for the whole 1.x line, with `cp38` wheels published. The project-level `Requires-Python >=3.9` that an earlier version of this README cited is the **latest** release's value, not 1.x's. `requirements.txt`'s `pip3 install "bc-stark-sdk<2"` is therefore correct for Noetic. |
+| Exact field list, units, channel layout and rate are **not published** | the authoritative source is the SDK's `main_mod.pyi`, which we do not have |
 
-## File structure and responsibilities
+**The schema is the blocking one, and units are part of it.** A raw reading from
+the device does **not** establish a physical unit: a number arriving over the
+wire could be a count, a normalised fraction or a calibrated force, and nothing
+on the device says which. Units require **vendor documentation or a
+calibration** — never inference from observed values. Until the field list and
+units are established, tactile acquisition in `hand_control` cannot be written.
 
-```text
-handover/
-├── README.md
-├── package.xml
-├── CMakeLists.txt
-├── setup.py
-├── src/handover/
-│   ├── __init__.py
-│   └── detector.py
-├── scripts/
-│   ├── auto_release_monitor.py
-│   ├── handover_node.py
-│   └── mock_dependencies.py
-├── srv/
-│   ├── ArmMonitor.srv
-│   ├── SetHeldObject.srv
-│   └── PlanHandover.srv
-├── launch/
-│   ├── demo.launch
-│   └── handover.launch
-├── config/example.yaml
-├── tests/test_detector.py
-└── docs/GITHUB_GUIDE.md
-```
+Because of this, **no tactile publisher was added to `hand_control`**: writing
+one against an unverified API, for a hand whose variant is unconfirmed, and
+thresholding values whose units nobody can state, would be fabricated hardware
+support.
 
-| File | Responsibility | Relationship to other files |
+### What is needed to lift NOT_READY
+
+1. **The hand variant.** Run the capability probes on the real device and report
+   which of the four it is. If it is **Revo2 Basic there is no tactile sensor**
+   and tactile-triggered handover is impossible with that hardware.
+2. **`main_mod.pyi`** from the SDK's Advanced Reference (the authoritative field
+   list), or the `python/revo2_tactile_grasp/` examples from
+   `BrainCoTech/brainco-hand-sdk`.
+3. **One sample frame**, printed raw: the field names, their types, how the five
+   fingers are indexed, the units, and the observed rate.
+4. **Confirmation that the 1.x wheel installs on this robot's 3.8**, which the
+   per-release metadata says it should (`pip3 install "bc-stark-sdk<2"`). Only
+   if that fails does the interpreter question return.
+
+Items 1–3 are what the `tactile:` block in `config/auto_release.yaml` needs.
+Item 4 decides where the publisher can live.
+
+---
+
+## Interface
+
+| Service | Type | Action |
 |---|---|---|
-| `src/handover/detector.py` | Detect sustained tactile changes | Imported by the monitor; tested without ROS |
-| `scripts/auto_release_monitor.py` | Receive tactile data and request release once | Runs `Detector`; calls the coordinator's release service |
-| `scripts/handover_node.py` | Coordinate planning, reaching, release, and retraction | Calls arm, hand, and monitor services |
-| `scripts/mock_dependencies.py` | Simulate planning, movement, opening, and tactile readings | Used by `demo.launch`; never starts hardware SDKs |
-| `srv/ArmMonitor.srv` | Define arm and object-label fields for enabling monitoring | Used by coordinator and monitor |
-| `srv/SetHeldObject.srv` | Define how a verified grasp is registered | Called by the main orchestrator |
-| `srv/PlanHandover.srv` | Define a complete four-leg handover plan | Must be implemented by the arm-planning adapter |
-| `launch/demo.launch` | Start coordinator, monitor, and mocks | For software integration demonstrations only |
-| `launch/handover.launch` | Start coordinator and monitor with an explicit configuration | Requires real dependencies to be running separately |
-| `config/example.yaml` | Provide example target and detector settings | Must be reviewed and calibrated before physical use |
-| `tests/test_detector.py` | Exercise detector behavior with synthetic readings | Imports the detector directly |
-| `package.xml` | Declare ROS and runtime dependencies | Read by catkin and dependency tooling |
-| `CMakeLists.txt` | Generate service types and install scripts | Read during the catkin build |
-| `setup.py` | Make the internal Python package importable | Allows nodes to import `handover.detector` |
-| `__init__.py` | Mark the internal Python package | Intentionally empty |
+| `/auto_release_monitor/arm` | `handover/ArmMonitor` | start monitoring: `side` + `session_token` in, the token echoed back |
+| `/auto_release_monitor/disarm` | `std_srvs/Trigger` | back to `IDLE`; always safe |
+| `/auto_release_monitor/<side>/arm` | `handover/ArmMonitor` | side-qualified alias |
+| `/auto_release_monitor/<side>/disarm` | `std_srvs/Trigger` | side-qualified alias |
 
-## Detection behavior
+| Topic | Type | Meaning |
+|---|---|---|
+| `/auto_release_monitor/state` | `std_msgs/String` (latched) | state + reason |
+| `/auto_release_monitor/ready` | `std_msgs/Bool` (latched) | can it be armed |
+| `/auto_release_monitor/event` | `std_msgs/String` | `candidate\|…`, `confirmed\|…`, `fault\|…` |
 
-The detector transitions through `IDLE -> BASELINING -> MONITORING -> TRIGGERED`. Invalid or interrupted data enters `FAULT`.
+One node per hand, launched `side:=left|right`, the same shape as
+`hand_control`. The unqualified names are kept so the orchestrator's existing
+preflight and tests are unaffected.
 
-- Collect 10 stable frames before establishing a baseline.
-- Average the latest 10 frames to reduce noise.
-- Slowly update the baseline for changes below the threshold.
-- Require a sustained change on the same unmasked channel before triggering.
-- Suppress release triggers for the first second after enabling the monitor.
-- Send only one automatic release notification per arming operation.
-- Enter FAULT on invalid values, changing channel count, or interrupted input.
+With `release_integration:=true`, a verified pull makes **one** call to
+`/orchestrator/run_auto_release` (`orchestrator/RunRoute`, the type already on
+this branch). That service only **validates and records** the event for the task
+that owns the execution lock — see `orchestrator/README.md`.
 
-A failed notification is logged without an automatic retry. Operator intervention is required.
+## Ownership
 
-## Software requirements
+| Package | Responsibility |
+|---|---|
+| `hand_control` | acquire and publish tactile data via the vendor SDK — **not implemented, blocked above** |
+| `handover` | detect a human taking the object |
+| `orchestrator` | own task state, validate release requests, sequence release and retraction |
 
-Use the team's existing **Ubuntu 20.04, ROS1 Noetic, and Python 3** environment for compatibility with this ROS1 project. This delivery does not include a complete ROS environment for macOS. macOS can be used to inspect files and run the pure Python detector tests.
+`handover` never opens the hand or moves the arm.
 
-Required components: catkin, rospy, std_msgs, std_srvs, message_generation, message_runtime, catkin_pkg, and python3-yaml.
+**Motor position, motor current and `expect_contact` are not tactile force.**
+`hand_control`'s `expect_contact` infers "something is in the hand" from fingers
+stopping short of their target. That is a grasp-success check, not a force
+measurement, and it cannot see a human pulling on a held object. It is not used
+here and must not be substituted.
 
-The mock demonstration does not require a camera, LiDAR, PyTorch, MuJoCo, or a physical robot. Physical operation additionally requires the team's G1 SDK/DDS environment, Revo2 SDK/Modbus connection, and working arm-planning and execution nodes. The tactile detector does not require neural-network training.
+## Detector
 
-## Build and run the mock demonstration
+```
+IDLE --arm()--> BASELINING --10 stable frames--> MONITORING --verified--> TRIGGERED
+  ^                 |                                 |                      |
+  +--- timeout -----+------------ timeout ------------+----- disarm() -------+
+                    ^                                 |
+                    +--------- invalid frame ---------+   (fault: fresh baseline)
+```
 
-In an Ubuntu terminal, replace PROJECT with the absolute path to the delivered `g1-handover` folder:
+`src/handover/tactile_detector.py` is pure python with time injected, so every
+timing rule is tested exactly. Per the framework:
+
+* **Arming** clears samples, baseline, debounce state and pending triggers, and
+  requires fresh valid data.
+* **Baselining** needs 10 frames whose spread is inside each channel's
+  `stable_tolerance`. A hand still vibrating is not a baseline, so this doubles
+  as the settling check.
+* **Post-arm suppression** blocks triggering for ≥ 1.0 s after arming, because
+  the arm's own deceleration looks like a pull.
+* **Monitoring** keeps a 10-frame moving average and compares it to the baseline.
+* **Adaptive baseline** absorbs slow drift only on channels inside their stable
+  band, and only at `drift_gain` per frame. A channel past its tolerance keeps
+  its baseline, so a developing pull is never erased.
+* **Debounce**: a qualifying change must persist for `debounce_sec`.
+* **Masks**: `enabled_channels` and `min_channels` select what may trigger.
+
+### Two design points worth knowing
+
+**A channel's *kind* decides how it may be compared.** `force_like` is
+subtractable and thresholdable; `angular` differences are wrapped into the
+period; `opaque` (proximity, raw counts, capacitance) is recorded and published
+but **never thresholded**, because its units, sign and linearity are unknown.
+Asking the detector to difference an `opaque` channel raises. Promote a channel
+to `force_like` only once calibration shows subtraction is meaningful.
+
+**Triggering needs both the smoothed and the instantaneous value past
+threshold.** A 10-frame average stretches a single-frame spike into ~0.33 s at
+30 Hz, which can out-last a shorter debounce window and fire on a transient.
+Requiring the latest frame to agree makes "persist for `debounce_sec`" mean the
+pull is *still happening*.
+
+### Invalid data is never evidence
+
+Missing, stale, malformed, non-finite, or source-flagged-invalid frames all:
+never count toward a pull; cancel any in-progress debounce; publish a
+`fault|…` diagnostic; and drop the detector back to `BASELINING`, so detection
+resumes only after a **fresh valid baseline**. A missing finger is a fault, not
+a zero reading. `TRIGGERED` is one-shot per arming session. A timeout reports
+`TIMEOUT`, never a successful handover.
+
+## Handover sequence (orchestrator-owned)
+
+1. Orchestrator confirms an object is held and which hand.
+2. Arm reaches the handover pose, hand stays closed.
+3. Wait ~1 s for deceleration vibration to settle.
+4. **Only then** arm the monitor.
+5. Monitor baselines and watches.
+6. A verified pull sends **one** request.
+7. Orchestrator validates its own handover state before allowing release.
+
+The detector is never armed during arm movement: the orchestrator only accepts
+release requests in its `AWAITING_PULL` phase, and rejects them in
+`MOVING_TO_POSE`. Nothing releases because a timer expired.
+
+## Detection-only mode (the default)
+
+With `release_integration:=false`:
+
+* real tactile readings are consumed and the detector runs normally;
+* state, candidate, confirmed and fault events are published;
+* **no release client of any kind is constructed** — the node cannot open the
+  hand and cannot ask the orchestrator to;
+* `orchestrator.srv` is not even imported.
+
+`test_detection_only.py` drives a synthetic pull to a confirmed trigger and
+asserts that zero service clients were built. Calibrate in this mode.
+
+## Run
 
 ```bash
-source /opt/ros/noetic/setup.bash
-export PROJECT=/absolute/path/to/g1-handover
-mkdir -p ~/handover_ws/src
-ln -s "$PROJECT/handover" ~/handover_ws/src/handover
-ln -s "$PROJECT/arm_control" ~/handover_ws/src/arm_control
-cd ~/handover_ws
-catkin_make
-source devel/setup.bash
-roslaunch handover demo.launch
+roslaunch handover auto_release_monitor.launch side:=right
+rostopic echo -n1 /auto_release_monitor/ready     # false until the blockers above are cleared
+rostopic echo /auto_release_monitor/event
+# Arming needs the side and the orchestrator's session token; it is refused
+# without one, and refused again while the detector is NOT_READY.
+rosservice call /auto_release_monitor/arm "{side: right, session_token: abc123}"
 ```
 
-Use a new workspace or check that these links do not already exist. Only these two packages are needed for the mock demonstration. Other supplied folders are not necessarily complete catkin packages.
+## Calibration
 
-In a second terminal, source the same workspace:
+**Nothing may be guessed.** `release_threshold`, `stable_tolerance`, `direction`
+and `debounce_sec` have no defaults; the detector refuses to arm without them.
+Derive them from recordings, then validate on *separate* recordings.
+
+Prerequisite: the `tactile:` block in `config/auto_release.yaml` filled in from
+items 1–3 above. Then, with the object held and the arm at the handover pose:
 
 ```bash
-source ~/handover_ws/devel/setup.bash
-rosservice call /handover/set_held_object "{arm: right, label: bottle}"
-rosservice call /orchestrator/run_handover "{}"
-rostopic echo /handover/status
+# 1. stationary hold, >= 60 s. Gives you the noise floor and the drift rate.
+rosrun handover record_tactile.py --out /tmp/hold.csv  --seconds 60 --note "stationary hold"
+
+# 2. arm settling: start recording BEFORE the arm reaches the pose.
+rosrun handover record_tactile.py --out /tmp/settle.csv --seconds 20 --note "settling"
+
+# 3. deliberate pulls, several directions, one per recording.
+rosrun handover record_tactile.py --out /tmp/pull_up.csv    --seconds 20 --note "pull up"
+rosrun handover record_tactile.py --out /tmp/pull_out.csv   --seconds 20 --note "pull outward"
+rosrun handover record_tactile.py --out /tmp/pull_side.csv  --seconds 20 --note "pull sideways"
+
+# 4. dropouts: unplug the sensor / power-cycle the hand mid-recording.
+rosrun handover record_tactile.py --out /tmp/dropout.csv --seconds 30 --note "disconnect"
 ```
 
-In a third terminal, simulate someone pulling the bottle:
+Each row carries `wall_sec`, the frame stamp, `source_valid` and every declared
+channel. Derive, per channel:
+
+| Value | From |
+|---|---|
+| `stable_tolerance` | peak-to-peak spread over the stationary hold, with margin. Must also cover the settling recording. |
+| `direction` | the sign the pull recordings move in |
+| `release_threshold` | comfortably above the settling excursion and below the smallest deliberate pull. Must be **larger** than `stable_tolerance` (validated). |
+| `debounce_sec` | how long the pull signature persists, minus margin, while staying under the 1 s detection target |
+| `drift_gain` | validate the (gain, threshold) pair: drift tracked over 60 s, slow pull still crossing |
+
+Fill them into the `calibration:` block, then **validate on recordings you did
+not tune on**:
 
 ```bash
-source ~/handover_ws/devel/setup.bash
-rosparam set /handover_mock_dependencies/pull true
+rosrun handover record_tactile.py --out /tmp/verify.csv --seconds 60 --detector --note "verify"
 ```
 
-Expected states include `RELEASING`, `RETRACTING`, and `DONE`. The mock publishes right-hand data only, so use `right`. Before repeating the demonstration, set `pull` back to `false` and register the held object again.
+`--detector` adds `baseline_*`, `avg_*`, `diff_*`, `state`, `candidate`,
+`fault`, `qualifying` and `event` columns, so a false trigger is traceable to
+the channel and frame that caused it.
 
-**The mock validates software sequencing only. It does not validate reachability, collision avoidance, actual grasping, or physical release latency.**
+### Acceptance targets — to measure, not achieved
 
-## Interfaces and team prerequisites
+The framework's intended targets, neither of which has been measured because
+there is no tactile data:
 
-### Arm planning
+* **zero** false releases/detections during a 60 s stationary hold;
+* detection **within 1 s** of a deliberate taking action.
 
-The arm team must implement `/arm/plan_handover` using `handover/PlanHandover`. This is a new integration contract, not an existing implemented service in the supplied project.
+Treat them as the gate for enabling `release_integration`, not as a claim.
 
-The request contains the arm and target x/y/z in `torso_link`. The response must contain four flattened N-by-5 joint paths, in radians: staging, reaching, retraction, and home.
-
-Before any movement, the adapter must validate IK, joint limits, and collisions for every leg. The staging path must begin at the actual current joint state; consecutive legs must share matching endpoints. Reject unsupported arms, unreachable targets, and stale robot state. Account for the held bottle when checking relevant paths.
-
-The supplied model code defines a right-arm model with input `[x, y, z, vx, vy]`. Do not pass the specification's `[x, y, z, rx, rz]` values or NaN orientations directly into this model. The adapter must choose a valid orientation and validate forward-kinematics error.
-
-The specification's target `(0.35, 0, 0.15)` is outside the training workspace configured in `arm_config.py`. The target in `example.yaml` is also only an example and requires validation. This implementation executes a preplanned home path instead of assuming a separate `go_home` service exists.
-
-### Arm execution
-
-Reuse `/arm/move_arm_joints`, type `arm_control/MoveArmJoints`. Confirm arm support, low-level speed limits, actual arrival detection, and finite execution timeouts.
-
-The coordinator subdivides consecutive points within a path to at most 5 degrees per joint. This does not replace the controller's velocity limit. The planner must generate the initial point from current robot state.
-
-### Hand and tactile data
-
-Provide `/hand_left/release` or `/hand_right/release`, type `std_srvs/Trigger`. Success must reflect the actual release outcome.
-
-Provide a tactile bridge publishing `/hand_{side}/tactile`, type `std_msgs/Float64MultiArray`, at approximately 30 Hz. Suggested data order:
-
-```text
-thumb normal, thumb tangential,
-index normal, index tangential,
-middle normal, middle tangential,
-ring normal, ring tangential,
-pinky normal, pinky tangential
-```
-
-This is the new package's adapter contract, not a claim that the vendor SDK already publishes this ROS message. Confirm channel meanings and units with the hand team.
-
-On device disconnection, stop publishing rather than repeatedly sending cached values. This message has no device timestamp, so the monitor detects reception gaps but cannot identify cached sensor readings. Do not include cyclic direction angles or proximity values under a shared threshold without calibration.
-
-Record stationary holding and pulls from multiple directions, then calibrate `threshold`, `stable_span`, `debounce`, `stale`, and `masked`.
-
-### Navigation and overall orchestration
-
-Navigation must confirm arrival, final orientation, and standstill. This package does not send navigation goals.
-
-After a verified successful grasp, the main orchestrator calls `/handover/set_held_object` with arm and label. After confirmed standstill, call `/orchestrator/run_handover`.
-
-The start service returning success means **waiting for the recipient**, not completed delivery. Completion is published as `/handover/status = DONE`.
-
-The independent coordinator locks only its own handover and release operations. The main orchestrator must enforce a global execution lock that blocks navigation, grasping, and other arm tasks throughout handover. Do not run another provider of the same service names simultaneously. If moving this logic into the main orchestrator, share its lock and held-object state rather than maintaining duplicate state.
-
-FAULT, motion failures, and prolonged waiting require operator handling. This version does not automatically open the hand or retract on a waiting timeout.
-
-## Physical operation
-
-First validate and start the real planning adapter, arm controller, hand node, and tactile bridge separately. Do not start the mock node alongside them.
-
-Use an explicitly reviewed configuration:
+## Tests
 
 ```bash
-roslaunch handover handover.launch config:=/absolute/path/reviewed.yaml
+cd handover && python3 -m unittest discover -s test -v
 ```
 
-Validate posture, workspace, collision avoidance while holding the bottle, and global task exclusion before recipient trials.
-
-If opening succeeds but retraction fails, the coordinator clears the held-object label and enters FAULT rather than reporting success. Manual recovery is required. Service discovery has a timeout; a service response does not have a separate forced cancellation mechanism. Service implementations must enforce finite execution timeouts.
-
-## Recommended development order
-
-1. Upload this package to a separate GitHub branch for team review.
-2. Build it in the team's ROS environment.
-3. Run the mock demonstration and observe DONE after a simulated pull.
-4. Connect real tactile readings and test detection without executing release.
-5. Verify hand release independently.
-6. Validate planned arm paths and execution independently.
-7. Test the complete handover.
-8. Connect navigation and the main orchestrator.
-
-## Tests and acceptance criteria
-
-From the repository root:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=handover/src python3 -m unittest discover -s handover/tests -v
-```
-
-Tests cover 60 seconds of synthetic stationary data without release, positive and negative step changes triggering once within one second, unstable baseline rejection, invalid or interrupted input, and masked channels.
-
-Synthetic tests do not replace physical acceptance tests: release within one second of a recipient taking the bottle from different directions, and zero false releases during 60 seconds of stationary holding.
-
-For first-time GitHub users, see [the upload guide](docs/GITHUB_GUIDE.md).
+Offline, no ROS and no hardware. **Every sample in them is synthetic and
+fabricated in the test file; none of it is hardware validation**, and the
+numbers in them are fixtures, not calibration values. Covered: arming and
+baseline collection, settling/unstable frames, drift versus sudden change,
+bounded drift absorption, debounce and post-arm suppression, masked and
+non-force channels, stale/missing/non-finite/malformed data, timeout, disarm,
+duplicate-trigger prevention, per-hand isolation, and that detection-only mode
+constructs no release client.

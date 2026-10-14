@@ -1,5 +1,0 @@
-string arm
-string label
----
-bool success
-string message

@@ -1,0 +1,69 @@
+# Parameters of navigation_node (loaded into its private namespace by launch/navigation.launch).
+# Launch-file args win over this file; code defaults are only a fallback (doc section 7: check live
+# values with `rosparam get /navigation_node`).
+global_frame: map
+robot_frame: pelvis
+rate: 10.0
+default_approach_distance: 0.6      # m, used when /navigation/navigate gets approach_distance <= 0
+
+# --- localization gate (doc 4.2) -------------------------------------------------------------
+use_localization_gate: true
+still_time: 3.0                     # s standing still
+sweep_amplitude: 0.52               # rad
+sweep_speed: 0.4                    # rad/s
+gate_timeout: 60.0                  # s total
+relocalize_without_goal: true
+
+# --- goal handling / recovery ----------------------------------------------------------------
+plan_timeout: 15.0                  # s to wait for map + robot pose before FAILURE
+max_recoveries: 3
+recovery_wait: 1.0                  # s standing still in RECOVERING before re-planning
+stuck_window: 10.0                  # s without progress -> RECOVERING
+stuck_dist: 0.05                    # m / 0.05 rad counts as progress
+blocked_timeout: 2.0                # s with no collision-free DWA trajectory -> RECOVERING
+replan_min_interval: 1.0            # s between replans triggered by a newly blocked path
+path_check_distance: 2.0            # m of path ahead that must stay traversable
+live_rate: 5.0                      # Hz, max rate of live-layer updates
+spec_settle_time: 2.0               # s inside the SPEC tolerance (0.10 m / 0.1 rad) without reaching the tighter
+                                    # controller target (0.08 / 0.08) -> SUCCESS (walking dead-band safety net)
+
+# --- layer 1: costmap (doc 4.3) --------------------------------------------------------------
+costmap:
+  footprint_circles: 5              # doc: 5 circles ...
+  circle_radius: 0.10               # ... of r = 0.10 m
+  footprint_half_width: 0.20        # circle centres span +-0.20 m (total body half-width 0.30 m)
+  collision_margin: 0.02
+  astar_clearance: 0.35             # footprint reach 0.30 m + 0.05 m margin (0.30 let the body squeeze through 0.7 m gaps)
+  standable_clearance: 0.40
+  unknown_is_lethal: true
+  risk_penalty: 6.0
+  danger_penalty: 30.0
+  decay_gain: 20.0
+  decay_length: 0.30
+  live_ignore_near_static: 0.10
+  live_hold: 0.6
+
+# --- layer 2: global planner ------------------------------------------------------------------
+global_planner:
+  cost_scale: 0.10
+  heuristic_weight: 1.5
+  time_budget: 3.0
+  start_snap: 0.50
+  los_max_penalty: 25.0
+  corner_radius: 0.50
+  resample: 0.10
+
+# --- layer 3: local planner (holonomic DWA, 3 phases) -----------------------------------------
+dwa:
+  nav_limits: [0.30, 0.15, 0.60]        # vx, vy, wz
+  approach_limits: [0.15, 0.10, 0.40]
+  terminal_limits: [0.06, 0.06, 0.30]
+  min_vx: -0.10
+  acc: [0.6, 0.4, 1.5]
+  horizon: 1.6
+  lookahead: 0.8
+  approach_dist: 0.8
+  terminal_dist: 0.30
+  xy_tol: 0.08                          # aims tighter than the spec 0.10 m / 0.1 rad
+  yaw_tol: 0.08
+  w_path: 3.0                           # path-following weight: keeps the body centred in narrow gaps

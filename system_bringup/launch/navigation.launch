@@ -1,0 +1,61 @@
+<launch>
+  <!-- NAVIGATION STACK ON THE REAL ROBOT (everything the navigation module needs, in dependency order):
+
+       1. g1_joint_state_bridge   REAL /joint_states (waist_yaw_joint!)  -> TF camera_init->pelvis is right
+       2. g1_slam localization    sensors + FAST-LIO2 + g1_tf + relocalizer + grid_composer
+                                  TF chain  map -> camera_init -> pelvis   (map is z-UP)
+       3. pelvis -> base_link     identity alias for perception / arm code that speaks `base_link`
+       4. g1_navigation           obstacle_cloud + navigation_node + cmd_vel_gate
+
+       roslaunch system_bringup navigation.launch map_name:=lab joint_mode:=relay joint_input_topic:=/arm/joint_states
+       roslaunch system_bringup navigation.launch map_name:=lab joint_mode:=dds network_interface:=enp2s0
+       roslaunch system_bringup navigation.launch map_name:=lab joint_mode:=fake allow_fake_zeros:=true   (BENCH ONLY)
+
+       Motion stays DISABLED until:  rosservice call /navigation/enable_motion "data: true"
+
+       base_link: ON by default (decision settled, docs/FRAME_CONTRACT.md).  It is an IDENTITY child of pelvis,
+       published HERE and nowhere else (g1_slam never publishes it): perception reports positions in base_link,
+       defined as the pelvis at zero waist yaw, which IS pelvis because the waist is a child of the pelvis.
+       with_base_link:=false only if no consumer speaks base_link.
+  -->
+  <arg name="map_name" default="current"/>
+  <arg name="rviz" default="false"/>
+  <arg name="motion_enabled" default="false"/>
+  <arg name="with_base_link" default="true"/>
+
+  <arg name="joint_mode" default="relay"/>                 <!-- relay | dds | fake -->
+  <arg name="joint_input_topic" default=""/>               <!-- required for relay -->
+  <arg name="network_interface" default=""/>               <!-- dds: e.g. enp2s0 -->
+  <arg name="allow_fake_zeros" default="false"/>           <!-- fake: bench only -->
+
+  <!-- locomotion_bridge: /locomotion/cmd_vel -> G1 walking controller.  OFF by default; when on it starts in
+       DRY RUN (logs only).  Walking needs BOTH  locomotion:=true locomotion_dry_run:=false  AND
+       rosservice call /navigation/enable_motion "data: true". -->
+  <arg name="locomotion" default="false"/>
+  <arg name="locomotion_dry_run" default="true"/>
+
+  <node pkg="g1_navigation" type="g1_joint_state_bridge.py" name="g1_joint_state_bridge" output="screen">
+    <param name="mode" value="$(arg joint_mode)"/>
+    <param name="input_topic" value="$(arg joint_input_topic)"/>
+    <param name="network_interface" value="$(arg network_interface)"/>
+    <param name="allow_fake_zeros" type="bool" value="$(arg allow_fake_zeros)"/>
+  </node>
+
+  <node if="$(arg locomotion)" pkg="g1_navigation" type="locomotion_bridge.py" name="locomotion_bridge" output="screen">
+    <param name="dry_run" type="bool" value="$(arg locomotion_dry_run)"/>
+    <param name="network_interface" value="$(arg network_interface)"/>
+  </node>
+
+  <include file="$(find g1_slam)/launch/localization.launch">
+    <arg name="map_name" value="$(arg map_name)"/>
+    <arg name="rviz" value="$(arg rviz)"/>
+  </include>
+
+  <node if="$(arg with_base_link)" pkg="tf2_ros" type="static_transform_publisher" name="pelvis_to_base_link"
+        args="0 0 0 0 0 0 pelvis base_link"/>
+
+  <include file="$(find g1_navigation)/launch/navigation.launch">
+    <arg name="map_name" value="$(arg map_name)"/>
+    <arg name="motion_enabled" value="$(arg motion_enabled)"/>
+  </include>
+</launch>

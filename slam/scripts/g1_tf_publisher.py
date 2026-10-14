@@ -31,8 +31,9 @@ owned by the robot-control / integration team. This node never synthesizes it.
 While it is absent or stale, the node stays up, warns, and publishes **nothing** -
 a missing transform is far safer than a confidently wrong heading.
 
-``base_link`` is an unresolved integration decision pending the navigation team.
-This node does not invent it and does not publish it.
+``base_link`` is NOT published here. Decision (navigation team): it is an identity alias of ``pelvis``
+(``pelvis -> base_link``, zero translation, zero rotation) owned and published by ``system_bringup``
+(``with_base_link``, on by default). This node never publishes it.
 
 Two ways to run
 ---------------
@@ -134,18 +135,18 @@ def validate_config(cfg):
 
     out["warn_period"] = float(out.get("warn_period", DEFAULT_CONFIG["warn_period"]))
 
-    # An unresolved cross-team decision: empty means "not decided", which is the
-    # only supported value. Anything else would be an invented transform.
+    # g1_slam never publishes base_link (system_bringup owns the identity alias), so the only
+    # supported value is empty. Anything else would be a second publisher for the frame.
     alias = out.get("base_link_alias", "")
     if alias is None:
         alias = ""
     if not isinstance(alias, str):
-        raise ConfigError("base_link_alias must be a string (empty = unresolved)")
+        raise ConfigError("base_link_alias must be a string (empty = not published here)")
     if alias.strip():
         raise ConfigError(
-            "base_link_alias={!r}: the pelvis -> base_link mapping is an unresolved "
-            "integration decision pending the navigation team, and publishing a guessed "
-            "transform is not supported. Leave it empty.".format(alias))
+            "base_link_alias={!r}: g1_slam never publishes base_link. The identity "
+            "pelvis -> base_link alias is owned by system_bringup (with_base_link); a "
+            "second publisher would give the frame two parents. Leave it empty.".format(alias))
     out["base_link_alias"] = ""
 
     # ROS substitutions are expanded by roslaunch in launch XML, never inside a
@@ -202,8 +203,8 @@ def run_check(config_path, urdf_path):
     # Structurally sound. Two things are still outstanding by design, and both
     # are owned by other teams, so report WAIT rather than PASS.
     print("WAIT: config and URDF valid; runtime TF still needs {} carrying {} "
-          "(owned by robot-control/integration), and pelvis -> base_link remains an "
-          "unresolved navigation-team decision. {}".format(
+          "(owned by robot-control/integration); pelvis -> base_link is published by "
+          "system_bringup, not here. {}".format(
               cfg["joint_states_topic"], cfg["waist_yaw_joint_name"],
               _summary(cfg, urdf_path)))
     return EXIT_WAIT
@@ -357,7 +358,7 @@ def run_node():
 
     rospy.loginfo("g1_tf_publisher: %s", _summary(cfg, urdf_path))
     rospy.logwarn("g1_tf_publisher: no %s -> %s will be published until %s carries %r. "
-                  "pelvis -> base_link stays unpublished (unresolved with navigation).",
+                  "pelvis -> base_link is published by system_bringup, not here.",
                   cfg["world_frame"], cfg["robot_root_frame"],
                   cfg["joint_states_topic"], cfg["waist_yaw_joint_name"])
     rospy.spin()

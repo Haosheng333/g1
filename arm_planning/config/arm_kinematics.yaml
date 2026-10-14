@@ -1,0 +1,123 @@
+robot_name: g1_23dof
+base_link: torso_link
+pose_order: [x, y, z, rx, rz]
+position_units: metres
+angle_units: radians
+orientation_convention: "URDF fixed-axis XYZ Euler angles; rx=roll, rz=yaw, pitch omitted"
+
+collision_checking:
+  wrist_roll_for_static_mask: 0.0
+
+  default_penetration_allowance_m: 0.0
+
+  penetration_allowance_m:
+    shoulder_yaw__torso: 0.001
+
+  self_collision_pairs:
+    - [shoulder_pitch, elbow]
+    - [shoulder_pitch, hand]
+    - [shoulder_roll, hand]
+    - [shoulder_yaw, hand]
+
+  body_links:
+    - torso
+    - head
+    - pelvis
+    - waist_yaw
+    - waist_support
+
+  dense_path_step_deg: 1.0
+
+# Object point -> grasp/pre-grasp pose geometry.
+grasp_geometry:
+  pregrasp_distance: 0.12
+  approach_angle_deg: 40.0
+  grasp_lateral_offset: 0.17
+  pregrasp_lateral_offset: 0.07
+  arm_sign:
+    left: -1.0
+    right: 1.0
+  lift_height: 0.10
+  retract_target_x: 0.15
+
+# Nominal floor/table geometry derived from the supplied URDF.
+# Assumptions: all leg joints are zero; ankle contact-sphere bottoms touch a level floor.
+nominal_environment_geometry:
+  posture: zero_leg_joint_posture
+  pelvis_height_from_floor: 0.7918637524
+  torso_height_from_floor: 0.8458637524
+  table_height_from_floor_min: 0.70
+  table_height_from_floor_max: 0.80
+  table_surface_z_in_torso_min: -0.1458637524
+  table_surface_z_in_torso_max: -0.0458637524
+  provisional: true
+
+# Preliminary table-grasp training region, expressed in torso_link.
+# Z includes table surface, bottle grasp height, 0.10 m lift, and margin.
+training_workspace:
+  enabled: true
+  frame_id: torso_link
+  x_min: 0.10
+  x_max: 0.40
+  y_min: -0.30
+  y_max: 0.30
+  z_min: -0.15
+  z_max: 0.20
+  per_arm_y_filter: false
+  left_y_min: -0.05
+  left_y_max: 0.30
+  right_y_min: -0.30
+  right_y_max: 0.05
+  maximum_attempt_multiplier: 1000
+
+left:
+  end_effector_link: left_grasp_frame
+  joint_names: [left_shoulder_pitch_joint, left_shoulder_roll_joint, left_shoulder_yaw_joint, left_elbow_joint, left_wrist_roll_joint]
+  origins_xyz:
+    - [0.0039563, 0.10022, 0.23778]
+    - [0.0, 0.038, -0.013831]
+    - [0.0, 0.00624, -0.1032]
+    - [0.015783, 0.0, -0.080518]
+    - [0.100, 0.00188791, -0.010]
+  origins_rpy:
+    - [0.27931, 0.000054949, -0.00019159]
+    - [-0.27925, 0.0, 0.0]
+    - [0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0]
+  axes:
+    - [0.0, 1.0, 0.0]
+    - [1.0, 0.0, 0.0]
+    - [0.0, 0.0, 1.0]
+    - [0.0, 1.0, 0.0]
+    - [1.0, 0.0, 0.0]
+  lower_limits: [-3.0892, -1.5882, -2.618, -1.0472, -1.972222054]
+  upper_limits: [2.6704, 2.2515, 2.618, 2.0944, 1.972222054]
+  grasp_xyz: [0.215, 0.006, 0.025]
+  grasp_rpy: [0.0, 0.0, 0.0]
+
+right:
+  end_effector_link: right_grasp_frame
+  joint_names: [right_shoulder_pitch_joint, right_shoulder_roll_joint, right_shoulder_yaw_joint, right_elbow_joint, right_wrist_roll_joint]
+  origins_xyz:
+    - [0.0039563, -0.10021, 0.23778]
+    - [0.0, -0.038, -0.013831]
+    - [0.0, -0.00624, -0.1032]
+    - [0.015783, 0.0, -0.080518]
+    - [0.100, -0.00188791, -0.010]
+  origins_rpy:
+    - [-0.27931, 0.000054949, 0.00019159]
+    - [0.27925, 0.0, 0.0]
+    - [0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0]
+  axes:
+    - [0.0, 1.0, 0.0]
+    - [1.0, 0.0, 0.0]
+    - [0.0, 0.0, 1.0]
+    - [0.0, 1.0, 0.0]
+    - [1.0, 0.0, 0.0]
+  lower_limits: [-3.0892, -2.2515, -2.618, -1.0472, -1.972222054]
+  upper_limits: [2.6704, 1.5882, 2.618, 2.0944, 1.972222054]
+  grasp_xyz: [0.215, -0.006, 0.025]
+  grasp_rpy: [0.0, 0.0, 0.0]

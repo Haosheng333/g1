@@ -1,9 +1,35 @@
 cmake_minimum_required(VERSION 3.0.2)
 project(handover)
-find_package(catkin REQUIRED COMPONENTS rospy std_msgs std_srvs arm_control message_generation)
-add_service_files(FILES ArmMonitor.srv PlanHandover.srv SetHeldObject.srv)
-generate_messages(DEPENDENCIES std_msgs)
+
+find_package(catkin REQUIRED COMPONENTS
+  rospy
+  std_msgs
+  std_srvs
+  message_generation
+)
+
 catkin_python_setup()
-catkin_package(CATKIN_DEPENDS message_runtime rospy std_msgs std_srvs arm_control)
-catkin_install_python(PROGRAMS scripts/auto_release_monitor.py scripts/handover_node.py scripts/mock_dependencies.py DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
-install(DIRECTORY launch config DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION})
+
+add_service_files(
+  FILES
+  ArmMonitor.srv
+)
+
+generate_messages(
+  DEPENDENCIES
+  std_msgs
+)
+
+catkin_package(
+  CATKIN_DEPENDS rospy std_msgs std_srvs message_runtime
+)
+
+catkin_install_python(PROGRAMS
+  scripts/auto_release_monitor.py
+  scripts/record_tactile.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
+install(DIRECTORY config launch
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+)

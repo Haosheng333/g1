@@ -1,0 +1,41 @@
+{
+  "arm": "right",
+  "shape": [
+    83,
+    55,
+    76,
+    46
+  ],
+  "dtype": "bool",
+  "true_means": "blocking collision",
+  "resolution_deg": 4.0,
+  "joint_order": [
+    "right_shoulder_pitch_joint",
+    "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint",
+    "right_elbow_joint"
+  ],
+  "joint_lower_limits": [
+    -3.0892,
+    -2.2515,
+    -2.618,
+    -1.0472
+  ],
+  "joint_upper_limits": [
+    2.6704,
+    1.5882,
+    2.618,
+    2.0944
+  ],
+  "wrist_roll_rad": 0.0,
+  "penetration_allowances_m": {
+    "shoulder_yaw__torso": 0.001
+  },
+  "state": {
+    "next_pitch_index": 83,
+    "states_checked": 15959240,
+    "blocked_states": 6820214,
+    "complete": true,
+    "elapsed_seconds_current_run": 4386.93368434906
+  }
+}

@@ -1,0 +1,4 @@
+# Synthetic sim room: coordinates are the object centres in the z-up map frame.
+waypoints:
+  table: {x: 2.5, y: 2.0, yaw: 0.0}
+  sofa:  {x: 7.4, y: 5.4, yaw: 0.0}

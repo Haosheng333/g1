@@ -1,5 +1,5 @@
 <launch>
-  <!-- Launch RViz with default ROS navigation displays -->
-  <node pkg="rviz" type="rviz" name="rviz" 
-        args="-d $(find g1_navigation)/config/nav.rviz" />
+  <!-- rviz with the navigation displays (Fixed Frame = map, 2D Nav Goal -> /move_base_simple/goal,
+       2D Pose Estimate -> /initialpose for the relocalizer). -->
+  <node pkg="rviz" type="rviz" name="rviz" args="-d $(find g1_navigation)/rviz/navigation.rviz" />
 </launch>

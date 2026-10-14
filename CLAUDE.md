@@ -77,9 +77,37 @@ docker/g1.sh enter 'source ~/Workspace/DIP/g1_ws/devel/setup.bash --extend && ro
 ```
 Expected: all three resolve under `/home/g1/Workspace/DIP/g1_ws/src/`.
 
-`navigation/` and `perception/` are also catkin packages but are not part of
-`g1_ws` and are not referenced by any launch file. Leave them unbuilt unless
-asked.
+`navigation/` (package `g1_navigation`) and `system_bringup/` are built in
+`g1_ws` too, through relative symlinks (create once, they are tracked):
+
+```bash
+cd ~/Workspace/DIP/g1_ws/src
+ln -s ../../navigation g1_navigation
+ln -s ../../system_bringup system_bringup
+```
+
+`perception/` is still not part of `g1_ws` and is not referenced by any launch
+file. Leave it unbuilt unless asked.
+
+## Run (navigation)
+
+Simulator, no robot (real `navigation_node`, `grid_composer`, `cmd_vel_gate`):
+
+```bash
+roslaunch g1_navigation sim.launch                      # rviz: "2D Nav Goal"
+python3 ~/Workspace/DIP/tools/nav_acceptance_test.py --dynamic
+```
+
+Robot (motion stays disabled until `/navigation/enable_motion`):
+
+```bash
+roslaunch system_bringup navigation.launch map_name:=<map> joint_mode:=relay joint_input_topic:=<topic>
+python3 ~/Workspace/DIP/tools/ab_live_check.py          # never moves the robot
+```
+
+Frames: `map` (z-up, saved map) -> `camera_init` (relocalizer) -> `pelvis`
+(g1_tf_publisher, needs REAL `/joint_states`). `base_link` is an OPTIONAL identity alias of
+`pelvis` published by `system_bringup` (`with_base_link`, ON by default; see docs/FRAME_CONTRACT.md).
 
 ## Run (SLAM)
 

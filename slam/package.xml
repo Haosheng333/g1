@@ -2,7 +2,7 @@
 <package format="2">
   <name>g1_slam</name>
   <version>0.0.1</version>
-  <description>G1 SLAM package. Phase 1: Mid-360 LiDAR bring-up and automated health checks.</description>
+  <description>G1 SLAM package: Mid-360 LiDAR bring-up, FAST-LIO2 mapping, map save, relocalization against a saved map, tiered /map.</description>
 
   <maintainer email="root@todo.todo">root</maintainer>
   <license>TODO</license>
@@ -15,6 +15,9 @@
   <depend>sensor_msgs</depend>
   <!-- g1_tf_publisher.py consumes FAST-LIO2's /Odometry. -->
   <depend>nav_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>geometry_msgs</depend>
   <depend>livox_ros_driver2</depend>
   <exec_depend>fast_lio</exec_depend>
 
@@ -22,11 +25,17 @@
        The URDF itself is vendored in urdf/ (g1_description is a plain directory
        in unitree_ros with no package.xml, so it cannot be a dependency). -->
   <exec_depend>robot_state_publisher</exec_depend>
-  <!-- g1_tf_publisher.py broadcasts camera_init -> pelvis. -->
+  <!-- g1_tf_publisher.py and relocalizer.py broadcast / read TF. -->
   <exec_depend>tf2_ros</exec_depend>
 
   <!-- map_server.launch serves generated 2D maps on /map and /map_metadata. -->
   <exec_depend>map_server</exec_depend>
+
+  <!-- slam_manager.py / relocalizer.py / grid_composer.py -->
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>python3-rospkg</exec_depend>
 
   <!-- Offline pcd_to_map converter only. -->
   <depend>libpcl-all-dev</depend>

@@ -44,7 +44,7 @@ g1/
 
 Do not nest the entire delivered `g1-handover` repository inside the cloned repository. If the team's handover folder has changed since the supplied snapshot, compare and merge those changes before replacing files.
 
-The package includes a `.gitignore` for Python caches. Do not upload `__pycache__`, `.pyc`, build outputs, credentials, or unrelated files. Existing model and map files do not need to be uploaded again for this change.
+Check the repository `.gitignore` for Python caches. Do not upload `__pycache__`, `.pyc`, build outputs, credentials, or unrelated files. Existing model and map files do not need to be uploaded again for this change.
 
 ## Review, commit, and push
 
@@ -53,7 +53,7 @@ Review the changed files in GitHub Desktop. They should be confined to `handover
 Suggested commit summary:
 
 ```text
-Add tactile handover module and mock demo
+Align handover with current main-branch contracts
 ```
 
 Commit to your branch, then publish or push the branch to GitHub.
@@ -65,19 +65,19 @@ Open a pull request from your branch to the team's main branch. If using a fork,
 Suggested title:
 
 ```text
-Add tactile handover coordinator and mock demonstration
+Align handover integration documentation with current main
 ```
 
 Suggested description:
 
 ```text
-Adds adaptive tactile change detection, handover sequencing, and mock dependencies.
+Aligns handover documentation with the current monitor and orchestrator contracts.
 
-Validation: five pure Python detector tests pass; Python syntax checks pass.
+Validation: run the current handover and orchestrator offline tests; record the actual results.
 ROS build, ROS integration, model loading, and physical robot tests remain unverified.
 
 Required integration:
-- Implement the /arm/plan_handover adapter with validated paths.
+- Verify the arm capabilities required by the current orchestrator.
 - Publish real tactile data using the documented message contract.
 - Integrate verified grasp state, navigation standstill, and global execution locking.
 ```

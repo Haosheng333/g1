@@ -1,0 +1,78 @@
+# auto_release_monitor parameters. Loaded into the node's private namespace by
+# launch/auto_release_monitor.launch; launch args win over this file.
+#
+# OUT OF THE BOX THIS DETECTOR IS NOT_READY, deliberately. Two things are
+# missing and neither may be guessed:
+#
+#   1. the tactile message schema  (tactile.* below)
+#   2. the calibration values      (calibration.* below)
+#
+# See handover/README.md for what has to be confirmed and how to record it.
+
+side: right                 # left | right. One node per hand.
+
+# Detection-only is the default. While false the node constructs NO release
+# client at all: it cannot open the hand and cannot ask the orchestrator to.
+# Calibrate in this mode.
+release_integration: false
+
+rate: 30.0                  # Hz, detector tick; the framework describes ~30 Hz readings
+
+# --- tactile input -----------------------------------------------------------------
+# DISABLED. The BrainCo Revo2 tactile schema is NOT confirmed:
+#   * the vendor ships four variants and Revo2 Basic has NO sensor at all;
+#   * the authoritative field list lives in the SDK's main_mod.pyi, which is not
+#     present in this workspace;
+#   * bc-stark-sdk requires Python >= 3.9 and ROS Noetic runs Python 3.8.
+# The hand owner must supply the hand variant, the stub and one sample frame.
+# Nothing below is a guess at the real schema; they are empty placeholders
+# showing the SHAPE of the mapping only.
+tactile:
+  enabled: false
+  topic: ""                 # e.g. /hand_right/tactile
+  message_type: ""          # "pkg/Msg", imported at runtime
+  stamp_field: ""           # optional dotted path to a seconds timestamp
+  valid_field: ""           # optional dotted path to a per-frame validity flag
+  expected_rate_hz: 30.0    # diagnostics only
+  # One entry per scalar channel. `kind` decides how it may be compared:
+  #   force_like  subtractable scalar, may be thresholded
+  #   angular     an angle; differences are wrapped, not thresholded by default
+  #   opaque      unknown units/sign; recorded but NEVER thresholded
+  channels: []
+  # channels:
+  #   - {name: index_normal,  finger: index,  kind: force_like, field: "data[0]", unit: counts}
+  #   - {name: index_tangent, finger: index,  kind: force_like, field: "data[1]", unit: counts}
+  #   - {name: index_dir,     finger: index,  kind: angular,    field: "data[2]", unit: rad}
+  #   - {name: index_prox,    finger: index,  kind: opaque,     field: "data[3]", unit: counts}
+
+# --- calibration -------------------------------------------------------------------
+# EVERY value here must come from real recordings (handover/README.md section
+# "Calibration"). There are no defaults: the detector refuses to arm without
+# them, so it can never fire on a guessed number.
+calibration:
+  enabled_channels: []      # channel mask; empty = every force_like channel
+  release_threshold: {}     # channel -> difference from baseline that counts as a pull
+  stable_tolerance: {}      # channel -> drift band; MUST be smaller than the threshold
+  direction: {}             # channel -> rise | drop | either
+  # REQUIRED: how long a qualifying change must persist. Left as "" rather than
+  # a YAML null because the ROS parameter server cannot marshal None: a bare
+  # `debounce_sec:` makes rosparam abort with
+  #   TypeError: cannot marshal None unless allow_none is enabled
+  # and the node never starts. The node maps "" to "not configured".
+  debounce_sec: ""
+  min_channels: 1           # how many channels must qualify simultaneously
+  # Dimensionless baseline-drift filter gain. Not a hardware magnitude, so it
+  # carries a default, but validate the (drift_gain, release_threshold) PAIR on
+  # the stationary-hold and pull recordings: too high and a slow pull is
+  # absorbed, too low and thermal drift is never tracked.
+  drift_gain: 0.05
+
+# --- framework-stated frame counts -------------------------------------------------
+baseline_frames: 10          # stable frames required before MONITORING
+moving_average_frames: 10    # moving average window
+post_arm_suppress_sec: 1.0   # no trigger within this long of arming (arm settling)
+
+# --- signal processing -------------------------------------------------------------
+sample_timeout_sec: 0.5      # a gap longer than this is a FAULT, never evidence
+baseline_timeout_sec: 10.0   # give up baselining after this long
+monitor_timeout_sec: 120.0   # overall arm-to-trigger budget; 0 disables

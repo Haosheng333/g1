@@ -1,0 +1,31 @@
+<launch>
+  <!-- Grasp-and-deliver sequencing.
+
+         /orchestrator/run_navigate_report   orchestrator/RunRoute
+         /orchestrator/run_grasp             orchestrator/RunRoute
+         /orchestrator/run_deliver           orchestrator/RunRoute
+         /orchestrator/run_auto_release      orchestrator/RunRoute
+         /orchestrator/status                std_msgs/String (latched)
+
+       DRY RUN BY DEFAULT. With enable_motion:=false (the default) no robot
+       service client is constructed at all, every step is traversed and
+       nothing moves, so a route can be rehearsed with the robot powered off:
+
+         rosservice call /orchestrator/run_navigate_report "{target: table}"
+
+       A real run needs enable_motion:=true AND a clean preflight. One blocker
+       means zero steps and zero motion, with the full list returned.
+
+       The grasp route is permanently NOT_READY for a real run: it needs the
+       unresolved perception to arm_planning frame contract.
+  -->
+  <arg name="config" default="$(find orchestrator)/config/orchestrator.yaml"/>
+  <arg name="enable_motion" default="false"/>
+  <arg name="side" default="right"/>
+
+  <node pkg="orchestrator" type="orchestrator_node.py" name="orchestrator" output="screen">
+    <rosparam command="load" file="$(arg config)"/>
+    <param name="enable_motion" type="bool" value="$(arg enable_motion)"/>
+    <param name="side" value="$(arg side)"/>
+  </node>
+</launch>

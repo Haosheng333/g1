@@ -1,0 +1,45 @@
+<launch>
+  <!-- ONLINE LOCALIZATION (doc 4.2): sensors + FAST-LIO2 + robot TF, then
+         relocalizer   -> TF  map -> camera_init   (matches live scans to map.pcd)
+         slam_manager  -> latched /slam/manager/state (Bool, True = localized)
+         grid_composer -> tiered /map
+       TF chain once localized:   map -> camera_init -> pelvis   (map is z-UP)
+
+       roslaunch g1_slam localization.launch map_name:=lab rviz:=true
+       (map_name defaults to the symlink 'current' written by the last save)
+
+       slam_bringup's static world -> camera_init is switched OFF here because
+       camera_init's parent is now `map` (a frame may have only one parent).
+       `map -> world` (identity) is published instead so rviz configs whose
+       Fixed Frame is `world` (slam/rviz/slam.rviz) keep working.
+  -->
+  <arg name="map_name" default="current"/>
+  <arg name="rviz" default="false"/>
+  <arg name="maps_dir" default="$(find g1_slam)/maps"/>
+
+  <include file="$(find g1_slam)/launch/slam_bringup.launch">
+    <arg name="rviz" value="$(arg rviz)"/>
+    <arg name="world_tf" value="false"/>
+  </include>
+
+  <node pkg="tf2_ros" type="static_transform_publisher" name="map_to_world_tf"
+        args="0 0 0 0 0 0 map world"/>
+
+  <node pkg="g1_slam" type="relocalizer.py" name="relocalizer" output="screen">
+    <rosparam command="load" file="$(find g1_slam)/config/relocalizer.yaml"/>
+    <param name="map_pcd" value="$(arg maps_dir)/$(arg map_name)/map.pcd"/>
+  </node>
+
+  <node pkg="g1_slam" type="slam_manager.py" name="slam_manager" output="screen">
+    <param name="mode" value="localization"/>
+    <param name="map_name" value="$(arg map_name)"/>
+    <param name="maps_dir" value="$(arg maps_dir)"/>
+  </node>
+
+  <node pkg="g1_slam" type="grid_composer.py" name="grid_composer" output="screen">
+    <param name="map_yaml" value="$(arg maps_dir)/$(arg map_name)/map.yaml"/>
+    <param name="frame_id" value="map"/>
+    <param name="danger_radius" value="0.25"/>
+    <param name="risk_radius" value="0.50"/>
+  </node>
+</launch>

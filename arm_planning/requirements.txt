@@ -1,0 +1,10 @@
+# Module 2 planner runtime dependencies without rosdep keys.
+# Imported lazily by arm_planning_node.py; absence is reported as NOT_READY
+# on /arm/planner/status rather than crashing the node.
+torch
+trimesh
+python-fcl
+# Available as rosdep keys and declared in package.xml, listed here for pip-only setups:
+numpy
+scipy
+PyYAML

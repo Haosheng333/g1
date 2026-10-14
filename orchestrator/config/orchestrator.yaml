@@ -1,0 +1,62 @@
+# orchestrator parameters, loaded into the node's private namespace by
+# launch/orchestrator.launch. Launch args win over this file.
+
+# --- safety ----------------------------------------------------------------------------
+# false (the default) = every route runs as a DRY RUN: no robot service client is
+# constructed at all, every step is traversed, nothing moves. Set true only
+# deliberately, and only after the blockers reported by a dry run are cleared.
+enable_motion: false
+
+# Which arm/hand the hand and arm steps address.
+side: right
+
+# A release request must quote the session token issued when the monitor was
+# armed. With this true (the default) a tokenless request is REFUSED, because
+# the request carries no origin time and stamping its receipt time cannot
+# establish which handover detected the pull. Set false ONLY in a rig where
+# stale events are impossible, and expect every accepted event to be flagged
+# origin_unverified. See docs/DELIVERY_FLOW.md.
+require_event_token: true
+
+# Release completion is NOT configurable here, by design.
+#
+# An orchestrator flag cannot assert that hand_control's release preset sets
+# require_settle: that is a fact about another package's YAML which this one
+# cannot observe. /hand_{side}/release returns only success and a message, the
+# preset leaves require_settle absent, and hand_node._execute therefore does not
+# fail on a settling timeout -- it returns success with "release commanded, did
+# not settle". So a success is an acknowledgement only, retraction after a
+# release stays refused, and there is deliberately no override. Lifting it needs
+# hand_control to expose settling; see the release_completion capability.
+
+# --- timeouts (seconds) ----------------------------------------------------------------
+timeouts:
+  localization: 30.0      # waiting for /slam/manager/state to go true
+  navigate: 1800.0        # /navigation/navigate to a terminal status, per nav_client
+  service_call: 10.0      # generic service call budget
+  # Delivery handover. A timeout here performs NO release: the route fails, the
+  # monitor is disarmed by cleanup, and the object stays recorded as held.
+  await_pull_sec: 120.0
+  # Framework section C step 3: let the arm's deceleration vibration settle
+  # BEFORE arming the detector, so settling is not read as a pull.
+  handover_settle_sec: 1.0
+  # Framework section E step 4: give the recipient time to secure the object
+  # before the arm retracts.
+  recipient_settle_sec: 1.5
+
+# How long preflight waits for each service to appear before calling it missing.
+service_timeout_s: 1.0
+
+# --- retries ---------------------------------------------------------------------------
+# Attempts per backend ACTION name. Anything unlisted gets exactly one attempt,
+# because retrying a motion step is not safe by default.
+#
+# close_gripper is 3 because hand_control documents the caller as retrying the
+# grasp (hand_control/README.md); a failed grasp is expected to be re-tried
+# rather than aborted.
+default_attempts: 1
+retries:
+  close_gripper: 3
+  open_gripper: 2
+  release_hand: 2
+  detect_object: 2
