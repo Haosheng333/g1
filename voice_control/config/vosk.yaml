@@ -1,0 +1,19 @@
+# Vosk language/model selection. Pick ONE; a single Vosk model is
+# language-specific, never bilingual (see README.md).
+#
+# Mandarin (default):
+#   model_path: models/vosk-model-small-cn-0.22
+#   sample_rate: 16000
+#
+# English (optional, listed in the spec as an alternative):
+#   model_path: models/vosk-model-small-en-us-0.15
+#   sample_rate: 16000
+#
+# Download with scripts/download_model.sh cn|en -- models are never fetched
+# automatically by the node. The command phrases in config/commands.yaml's
+# matcher (src/g1_voice_control/commands.py:default_specs) already cover
+# both languages' phrasing for each command; only the ASR model needs
+# picking per deployment.
+
+model_path: models/vosk-model-small-cn-0.22
+sample_rate: 16000

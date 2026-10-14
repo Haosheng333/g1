@@ -1,0 +1,19 @@
+# voice_control command configuration.
+#
+# grasp_target / deliver_target feed RunRoute.srv's `target` field directly:
+# per orchestrator/sequencer.py's RouteContext, `target` is used BOTH as the
+# navigation waypoint name and (for grasp) as the perception object label --
+# that is the real, current wiring (see voice_control/README.md), not a
+# simplification made here. Leave a value unset (null/empty) rather than
+# guessing a destination or label the orchestrator was never told about;
+# dispatch.py then refuses the command and reports the gap instead of
+# dispatching with an invented target.
+
+grasp_target: "bottle"
+deliver_target: "sofa"
+
+# Seconds a task-start command (grasp/deliver) stays pending before it
+# expires and must be re-spoken. Chosen to be long enough for a person to say
+# "确认执行" / "confirm" deliberately, short enough that a stale pending
+# command does not linger and get confirmed by surprise later.
+confirmation_window_sec: 8.0
