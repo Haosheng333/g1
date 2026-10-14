@@ -6,6 +6,7 @@ tried to build a release client these tests would fail loudly.
 """
 import os
 import sys
+import contextlib
 import types
 import unittest
 
@@ -70,6 +71,12 @@ def _install_stubs():
     std_srvs.srv = srv
     sys.modules["std_srvs"] = std_srvs
     sys.modules["std_srvs.srv"] = srv
+
+    hsrv = types.ModuleType("handover.srv")
+    hsrv.ArmMonitor = object
+    hsrv.ArmMonitorResponse = lambda success=False, message="", session_token="": \
+        types.SimpleNamespace(success=success, message=message, session_token=session_token)
+    sys.modules["handover.srv"] = hsrv
     return rospy
 
 
@@ -122,9 +129,12 @@ def build(release_integration=False, **overrides):
     return arm_node.AutoReleaseMonitorNode()
 
 
+ARM_REQ = types.SimpleNamespace(side="right", session_token="testtoken123")
+
+
 def drive_to_trigger(node, frames=120, value_after=0.0):
     """Arm, baseline, clear suppression, then pull. Returns published events."""
-    node.handle_arm(None)
+    node.handle_arm(ARM_REQ)
     # baseline + suppression at a steady level
     for _ in range(int(1.0 / DT) + node.config.baseline_frames + 5):
         node._frame = tf.TactileFrame(ROSPY._clock["t"], {"ix_n": 100.0, "ix_p": 5.0})
@@ -161,7 +171,7 @@ class DetectionOnlyIsTheDefault(unittest.TestCase):
 
     def test_a_fault_is_published_and_builds_no_client(self):
         node = build()
-        node.handle_arm(None)
+        node.handle_arm(ARM_REQ)
         for _ in range(node.config.baseline_frames + 2):
             node._frame = tf.TactileFrame(ROSPY._clock["t"], {"ix_n": 100.0, "ix_p": 5.0})
             node._frame_at = ROSPY._clock["t"]
@@ -189,6 +199,33 @@ class DetectionOnlyIsTheDefault(unittest.TestCase):
             self.assertNotIn(forbidden, code)
 
 
+class ArmingRequiresSideAndToken(unittest.TestCase):
+    def test_arming_without_a_token_is_refused(self):
+        node = build()
+        r = node.handle_arm(types.SimpleNamespace(side="right", session_token=""))
+        self.assertFalse(r.success)
+        self.assertIn("no session_token", r.message)
+
+    def test_arming_the_wrong_side_is_refused(self):
+        node = build()
+        r = node.handle_arm(types.SimpleNamespace(side="left", session_token="t"))
+        self.assertFalse(r.success)
+        self.assertIn("right hand, not left", r.message)
+
+    def test_a_successful_arm_echoes_the_token_back(self):
+        node = build()
+        r = node.handle_arm(ARM_REQ)
+        self.assertTrue(r.success, r.message)
+        self.assertEqual(r.session_token, "testtoken123")
+
+    def test_disarm_clears_the_stored_token(self):
+        node = build()
+        node.handle_arm(ARM_REQ)
+        self.assertEqual(node._session_token, "testtoken123")
+        node.handle_disarm(None)
+        self.assertEqual(node._session_token, "")
+
+
 class UncalibratedStaysNotReady(unittest.TestCase):
     def test_the_shipped_config_shape_is_not_ready(self):
         node = build(**{
@@ -204,7 +241,7 @@ class UncalibratedStaysNotReady(unittest.TestCase):
             "~tactile": {"enabled": False, "topic": "", "message_type": "", "channels": []},
             "~calibration": {},
         })
-        response = node.handle_arm(None)
+        response = node.handle_arm(ARM_REQ)
         self.assertFalse(response.success)
         self.assertIn("NOT_READY", response.message)
 
@@ -218,6 +255,46 @@ class UncalibratedStaysNotReady(unittest.TestCase):
     def test_an_invalid_side_is_fatal(self):
         with self.assertRaises(ValueError):
             build(**{"~side": "middle"})
+
+
+class _BlockFinder:
+    """sys.meta_path finder that makes `prefix` and its submodules unimportable."""
+
+    def __init__(self, prefix: str):
+        self.prefix = prefix
+
+    def find_module(self, name, path=None):            # py2-style, still consulted
+        return self if self._matches(name) else None
+
+    def find_spec(self, name, path=None, target=None):
+        if self._matches(name):
+            raise ImportError("blocked by test: %s" % (name,))
+        return None
+
+    def load_module(self, name):
+        raise ImportError("blocked by test: %s" % (name,))
+
+    def _matches(self, name):
+        return name == self.prefix or name.startswith(self.prefix + ".")
+
+
+@contextlib.contextmanager
+def blocked_import(prefix: str):
+    """Make `prefix` unimportable for the duration, however it is installed."""
+    saved = {k: v for k, v in sys.modules.items()
+             if k == prefix or k.startswith(prefix + ".")}
+    for k in saved:
+        del sys.modules[k]
+    finder = _BlockFinder(prefix)
+    sys.meta_path.insert(0, finder)
+    try:
+        yield
+    finally:
+        try:
+            sys.meta_path.remove(finder)
+        except ValueError:
+            pass
+        sys.modules.update(saved)
 
 
 class ReleaseIntegrationPathIsGuarded(unittest.TestCase):
@@ -246,10 +323,14 @@ class ReleaseIntegrationPathIsGuarded(unittest.TestCase):
 
     def test_a_missing_orchestrator_message_degrades_without_actuating(self):
         """If orchestrator is not built, nothing is actuated and nothing raises."""
-        sys.modules.pop("orchestrator.srv", None)
-        sys.modules.pop("orchestrator", None)
-        node = build(release_integration=True)
-        events = drive_to_trigger(node)                 # must not raise
+        # Popping sys.modules is NOT enough: on a machine where orchestrator IS
+        # built, the lazy `from orchestrator.srv import RunRoute` would simply
+        # re-import it from the devel space and this test would assert the
+        # opposite of what it claims. Block the import outright so the
+        # degradation path is exercised on every machine.
+        with blocked_import("orchestrator"):
+            node = build(release_integration=True)
+            events = drive_to_trigger(node)             # must not raise
         self.assertTrue(any(e.startswith("confirmed|") for e in events))
         self.assertEqual(PROXIES_BUILT, [])
 
