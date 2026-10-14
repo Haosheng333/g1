@@ -6,9 +6,9 @@ hand_control. Services and topics keep the names this branch already used, so
 the orchestrator's preflight and the existing tests are unaffected; the
 side-qualified aliases are added for running two hands at once.
 
-    /auto_release_monitor/arm            std_srvs/Trigger   (legacy, this side)
-    /auto_release_monitor/disarm         std_srvs/Trigger   (legacy, this side)
-    /auto_release_monitor/<side>/arm     std_srvs/Trigger
+    /auto_release_monitor/arm            handover/ArmMonitor  (side + session_token)
+    /auto_release_monitor/disarm         std_srvs/Trigger
+    /auto_release_monitor/<side>/arm     handover/ArmMonitor
     /auto_release_monitor/<side>/disarm  std_srvs/Trigger
     /auto_release_monitor/state          std_msgs/String  (latched) state + reason
     /auto_release_monitor/ready          std_msgs/Bool    (latched) can it be armed
@@ -24,6 +24,11 @@ With `release_integration:=true` a verified pull produces exactly ONE request to
 the task that owns the execution lock. This node never opens the hand and never
 moves the arm itself, in either mode.
 
+SESSION TOKEN. The orchestrator creates the token and sends it with the arm
+request; this node stores it and ECHOES THAT SAME VALUE in its release request.
+It never generates one. Arming without a token is refused, because a release
+request the orchestrator cannot identify is refused at the other end anyway.
+
 NOT_READY OUT OF THE BOX, BY DESIGN. The tactile adapter is disabled because the
 BrainCo Revo2 tactile schema is unconfirmed (the vendor ships four variants, one
 with no sensor at all, and the authoritative field list is in the SDK's
@@ -38,6 +43,8 @@ import threading
 import rospy
 from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger, TriggerResponse
+
+from handover.srv import ArmMonitor, ArmMonitorResponse
 
 from handover import tactile_adapter as ta
 from handover import tactile_frame as tf
@@ -75,6 +82,8 @@ class AutoReleaseMonitorNode:
         self._frame = None
         self._frame_at = None
         self._requested = False
+        #: Token issued by the orchestrator at arming. Echoed, never generated.
+        self._session_token = ""
 
         self.side = str(_param("side", "right"))
         if self.side not in ("left", "right"):
@@ -183,22 +192,42 @@ class AutoReleaseMonitorNode:
             self._frame_at = now
 
     # ------------------------------------------------------------------ services
-    def handle_arm(self, _req) -> TriggerResponse:
+    def handle_arm(self, req) -> ArmMonitorResponse:
+        """Arm this hand's detector for the session the caller names."""
+        side = (getattr(req, "side", "") or "").strip()
+        token = (getattr(req, "session_token", "") or "").strip()
+
+        if side and side != self.side:
+            message = ("this monitor is the %s hand, not %s" % (self.side, side))
+            rospy.logwarn("[auto_release_monitor:%s] arm refused: %s", self.side, message)
+            return ArmMonitorResponse(success=False, message=message, session_token="")
+        if not token:
+            message = ("refused: no session_token. The orchestrator must send the token it "
+                       "will expect echoed back; a release request it cannot identify is "
+                       "refused anyway.")
+            rospy.logwarn("[auto_release_monitor:%s] arm refused: %s", self.side, message)
+            return ArmMonitorResponse(success=False, message=message, session_token="")
+
         blockers = self.blockers()
         if blockers:
             message = "NOT_READY: " + "; ".join(blockers)
             rospy.logwarn("[auto_release_monitor:%s] arm refused: %s", self.side, message)
             self._publish()
-            return TriggerResponse(success=False, message=message)
+            return ArmMonitorResponse(success=False, message=message, session_token="")
 
         with self._lock:
             self._requested = False
             self._frame = None
             self._frame_at = None
+            # Stored, never generated here. Echoed verbatim on a verified pull.
+            self._session_token = token
             outcome = self.detector.arm(rospy.Time.now().to_sec())
-        rospy.loginfo("[auto_release_monitor:%s] arm: %s", self.side, outcome.reason)
+        rospy.loginfo("[auto_release_monitor:%s] arm (token %s): %s",
+                      self.side, token, outcome.reason)
         self._publish()
-        return TriggerResponse(success=outcome.ok, message=outcome.reason)
+        return ArmMonitorResponse(
+            success=outcome.ok, message=outcome.reason,
+            session_token=token if outcome.ok else "")
 
     def handle_disarm(self, _req) -> TriggerResponse:
         with self._lock:
@@ -207,6 +236,7 @@ class AutoReleaseMonitorNode:
             self._frame = None
             self._frame_at = None
             self._requested = False
+            self._session_token = ""
         rospy.logwarn("[auto_release_monitor:%s] disarm: %s", self.side, outcome.reason)
         self._publish()
         return TriggerResponse(success=True, message=outcome.reason)
@@ -248,7 +278,10 @@ class AutoReleaseMonitorNode:
                 self._request_release(event.reason)
 
     def _request_release(self, reason: str) -> None:
-        """Ask the ORCHESTRATOR to act. Never actuate, never open the hand."""
+        """Ask the ORCHESTRATOR to act, echoing the session token it issued.
+
+        Never actuates and never opens the hand.
+        """
         if not self.release_integration:
             rospy.logwarn(
                 "[auto_release_monitor:%s] detection-only mode: a verified pull was "
@@ -267,7 +300,8 @@ class AutoReleaseMonitorNode:
         try:
             rospy.wait_for_service(RELEASE_ROUTE_SERVICE, timeout=5.0)
             call = rospy.ServiceProxy(RELEASE_ROUTE_SERVICE, RunRoute)
-            response = call(route="auto_release", target=self.side, start_step="", dry_run=False)
+            response = call(route="auto_release", target=self.side, start_step="",
+                            dry_run=False, event_token=self._session_token)
             if response.success:
                 rospy.loginfo("[auto_release_monitor:%s] %s accepted: %s",
                               self.side, RELEASE_ROUTE_SERVICE, response.message)
@@ -286,9 +320,9 @@ def main() -> None:
     rospy.init_node("auto_release_monitor")
     node = AutoReleaseMonitorNode()
 
-    rospy.Service("/auto_release_monitor/arm", Trigger, node.handle_arm)
+    rospy.Service("/auto_release_monitor/arm", ArmMonitor, node.handle_arm)
     rospy.Service("/auto_release_monitor/disarm", Trigger, node.handle_disarm)
-    rospy.Service("/auto_release_monitor/%s/arm" % node.side, Trigger, node.handle_arm)
+    rospy.Service("/auto_release_monitor/%s/arm" % node.side, ArmMonitor, node.handle_arm)
     rospy.Service("/auto_release_monitor/%s/disarm" % node.side, Trigger, node.handle_disarm)
 
     mode = "RELEASE INTEGRATION ENABLED" if node.release_integration else "detection-only"

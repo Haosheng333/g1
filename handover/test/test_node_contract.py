@@ -55,6 +55,23 @@ class NeverActuates(unittest.TestCase):
         constant = re.search(r'RELEASE_ROUTE_SERVICE\s*=\s*"([^"]+)"', self.code)
         self.assertEqual(constant.group(1), "/orchestrator/run_auto_release")
 
+    def test_the_arm_service_carries_side_and_token(self):
+        """A fieldless Trigger could not carry the session token."""
+        srv = os.path.join(HERE, "..", "srv", "ArmMonitor.srv")
+        self.assertTrue(os.path.isfile(srv), "handover/srv/ArmMonitor.srv is missing")
+        with open(srv) as f:
+            request = f.read().split("---")[0]
+        names = [l.split()[1] for l in request.splitlines()
+                 if l.split("#")[0].strip()]
+        self.assertEqual(names, ["side", "session_token"])
+
+    def test_the_monitor_never_generates_a_token(self):
+        """One authoritative token: the orchestrator makes it, we echo it."""
+        for forbidden in ("uuid", "random", "new_session_token", "token_hex"):
+            self.assertNotIn(forbidden, self.code,
+                             "the monitor must echo the orchestrator's token, not mint one")
+        self.assertIn("self._session_token", self.code)
+
     def test_only_arm_and_disarm_are_advertised(self):
         """Four names, but only two operations: legacy plus side-qualified."""
         advertised = sorted(set(
