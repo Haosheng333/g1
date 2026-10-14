@@ -12,4 +12,14 @@
   <exec_depend>g1_slam</exec_depend>
   <exec_depend>g1_navigation</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
+
+  <!-- Referenced by manipulation.launch / full_system.launch. Every one of
+       these is behind an arg that defaults to disabled except arm_planning,
+       which is planning only and moves nothing. -->
+  <exec_depend>arm_planning</exec_depend>
+  <exec_depend>perception</exec_depend>
+  <exec_depend>hand_control</exec_depend>
+  <exec_depend>arm_control</exec_depend>
+  <exec_depend>handover</exec_depend>
+  <exec_depend>orchestrator</exec_depend>
 </package>

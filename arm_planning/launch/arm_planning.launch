@@ -1,0 +1,33 @@
+<launch>
+  <!-- Module 2 planning services (planning only; nothing here moves the robot).
+
+         /arm/plan_to_pose           arm_planning/PlanToPose
+         /arm/plan_grasp_from_point  arm_planning/PlanGraspFromPoint
+         /arm/planner/ready          std_msgs/Bool   (latched)
+         /arm/planner/status         std_msgs/String (latched)
+
+       Models and masks load once at startup (a few seconds). If an asset or a
+       python dependency is missing the node still starts, publishes
+       ready=false with the reason, and refuses every request, so the
+       orchestrator's preflight can name the blocker. Pass
+       exit_on_init_failure:=true to make that fatal instead.
+
+       Targets are torso_link coordinates (doc sections 2.3, 13.4). No
+       pelvis/base_link conversion happens here; that transform is unresolved.
+  -->
+  <arg name="project_root" default=""/>          <!-- empty = rospkg package path -->
+  <arg name="exit_on_init_failure" default="false"/>
+  <arg name="max_position_error_m" default="0.01"/>
+  <arg name="max_rx_error_rad" default="0.10"/>
+  <arg name="max_rz_error_rad" default="0.15"/>
+  <arg name="search_radius" default="3"/>
+
+  <node pkg="arm_planning" type="arm_planning_node.py" name="arm_planning_node" output="screen">
+    <param name="project_root" value="$(arg project_root)"/>
+    <param name="exit_on_init_failure" type="bool" value="$(arg exit_on_init_failure)"/>
+    <param name="max_position_error_m" value="$(arg max_position_error_m)"/>
+    <param name="max_rx_error_rad" value="$(arg max_rx_error_rad)"/>
+    <param name="max_rz_error_rad" value="$(arg max_rz_error_rad)"/>
+    <param name="search_radius" value="$(arg search_radius)"/>
+  </node>
+</launch>

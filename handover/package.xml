@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>handover</name>
+  <version>0.1.0</version>
+  <description>
+    Auto-release handover monitor: watches a tactile signal for the moment a
+    human takes the held object and asks the orchestrator to run the release.
+    Detection only, never actuation. The tactile adapter is disabled until the
+    hand owner confirms the message schema, and the release threshold has no
+    default, so the monitor cannot fire on a guessed value.
+  </description>
+
+  <maintainer email="haochengsun38@gmail.com">Haosheng333</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>message_generation</build_depend>
+  <exec_depend>message_runtime</exec_depend>
+
+  <depend>rospy</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+
+  <!-- yaml is read only by test/test_tactile_adapter.py, not at runtime. -->
+  <test_depend>python3-yaml</test_depend>
+
+  <!-- orchestrator/RunRoute is imported lazily at trigger time only, so the
+       node still starts when the orchestrator package is not built. -->
+  <exec_depend>orchestrator</exec_depend>
+
+  <export>
+    <catkin_python_setup />
+  </export>
+</package>

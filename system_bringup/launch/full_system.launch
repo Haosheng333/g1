@@ -1,0 +1,87 @@
+<launch>
+  <!-- WHOLE PIPELINE: navigation stack, manipulation stack, orchestrator.
+
+       SAFE BY DEFAULT. Launched with no arguments this brings up navigation
+       with its motion gate shut, the arm PLANNING service, and the
+       orchestrator in dry-run mode. Nothing moves:
+
+         motion_enabled  false  navigation's cmd_vel_gate forwards nothing
+         enable_motion   false  orchestrator runs every route as a dry run,
+                                constructing no robot service client at all
+         perception      false  needs the RealSense camera
+         hand            false  needs the serial hand
+         arm_control     false  commands the robot over Unitree DDS
+         handover        false  NOT_READY until its tactile schema is confirmed
+
+       Rehearse a route with the robot powered off:
+         roslaunch system_bringup full_system.launch
+         rosservice call /orchestrator/run_navigate_report "{target: table}"
+
+       On the robot, with a saved map:
+         roslaunch system_bringup full_system.launch map_name:=lab \
+             joint_mode:=relay joint_input_topic:=/arm/joint_states \
+             perception:=true hand:=true arm_control:=true
+
+       Real motion is then two further, deliberate steps:
+         enable_motion:=true                              (orchestrator)
+         rosservice call /navigation/enable_motion "data: true"
+
+       The full grasp route stays NOT_READY regardless: it needs the
+       unresolved perception to arm_planning frame contract. See
+       orchestrator/README.md.
+  -->
+  <!-- navigation -->
+  <arg name="navigation" default="true"/>
+  <arg name="map_name" default="current"/>
+  <arg name="rviz" default="false"/>
+  <arg name="motion_enabled" default="false"/>
+  <!-- Settled: base_link is an identity alias of pelvis, ON by default
+       (docs/FRAME_CONTRACT.md). Matches system_bringup/navigation.launch. -->
+  <arg name="with_base_link" default="true"/>
+  <arg name="joint_mode" default="relay"/>
+  <arg name="joint_input_topic" default=""/>
+  <arg name="network_interface" default=""/>
+  <arg name="allow_fake_zeros" default="false"/>
+
+  <!-- manipulation -->
+  <arg name="manipulation" default="true"/>
+  <arg name="side" default="right"/>
+  <arg name="arm_planning" default="true"/>
+  <arg name="perception" default="false"/>
+  <arg name="hand" default="false"/>
+  <arg name="hand_sim" default="false"/>
+  <arg name="hand_com_port" default=""/>
+  <arg name="arm_control" default="false"/>
+  <arg name="handover" default="false"/>
+
+  <!-- orchestrator -->
+  <arg name="orchestrator" default="true"/>
+  <arg name="enable_motion" default="false"/>
+
+  <include file="$(find system_bringup)/launch/navigation.launch" if="$(arg navigation)">
+    <arg name="map_name" value="$(arg map_name)"/>
+    <arg name="rviz" value="$(arg rviz)"/>
+    <arg name="motion_enabled" value="$(arg motion_enabled)"/>
+    <arg name="with_base_link" value="$(arg with_base_link)"/>
+    <arg name="joint_mode" value="$(arg joint_mode)"/>
+    <arg name="joint_input_topic" value="$(arg joint_input_topic)"/>
+    <arg name="network_interface" value="$(arg network_interface)"/>
+    <arg name="allow_fake_zeros" value="$(arg allow_fake_zeros)"/>
+  </include>
+
+  <include file="$(find system_bringup)/launch/manipulation.launch" if="$(arg manipulation)">
+    <arg name="side" value="$(arg side)"/>
+    <arg name="arm_planning" value="$(arg arm_planning)"/>
+    <arg name="perception" value="$(arg perception)"/>
+    <arg name="hand" value="$(arg hand)"/>
+    <arg name="hand_sim" value="$(arg hand_sim)"/>
+    <arg name="hand_com_port" value="$(arg hand_com_port)"/>
+    <arg name="arm_control" value="$(arg arm_control)"/>
+    <arg name="handover" value="$(arg handover)"/>
+  </include>
+
+  <include file="$(find orchestrator)/launch/orchestrator.launch" if="$(arg orchestrator)">
+    <arg name="enable_motion" value="$(arg enable_motion)"/>
+    <arg name="side" value="$(arg side)"/>
+  </include>
+</launch>

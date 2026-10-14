@@ -2,6 +2,20 @@
 
 Run in the Noetic container, workspace `g1_ws`, repo root `~/Workspace/DIP` (adjust paths).
 
+## 0. Per-machine wiring and system dependencies (do this first)
+```bash
+tools/bootstrap_workspace.sh                 # read-only report
+tools/bootstrap_workspace.sh --apply         # untracked overlays + CATKIN_IGNORE
+rosdep check   --from-paths src --ignore-src --rosdistro noetic
+rosdep install --from-paths src --ignore-src --rosdistro noetic -y
+```
+The bootstrap resolves `livox_ros_driver2` and `fast_lio` on THIS machine without
+touching the tracked symlinks (which encode another machine's layout), and prints
+whether exactly one package was discovered per name. See `g1_ws/README.md`.
+
+Passing launch resolution proves only that roslaunch can FIND the packages; it is
+not evidence that the LiDAR, camera, hand or robot will start.
+
 ## 1. Build and launch resolution
 ```bash
 cd ~/Workspace/DIP && bash tools/cd_apply.sh          # once, after unzipping CD_reviewed.zip
