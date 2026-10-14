@@ -61,7 +61,7 @@ class DryRunTraversal(unittest.TestCase):
         backend = seq.DryRunBackend()
         seq.run_route(r.GRASP, backend, ctx(route="grasp"))
         for name, value in vars(backend).items():
-            self.assertIn(name, ("calls", "cleanup"), "unexpected state %r" % name)
+            self.assertIn(name, ("calls", "cleanup", "_t"), "unexpected state %r" % name)
 
     def test_every_action_in_every_route_is_implemented(self):
         backend = seq.DryRunBackend()
@@ -129,7 +129,8 @@ class FailFast(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn("RuntimeError", result.message)
         self.assertIn("nav exploded", result.message)
-        self.assertEqual(backend.cleanup, ["cancel_navigation", "disable_motion"])
+        self.assertEqual(backend.cleanup,
+                         ["cancel_navigation", "disable_motion", "disarm_monitor_cleanup"])
 
     def test_a_missing_backend_action_is_a_failed_step(self):
         """A backend that does not implement a route's action must not crash."""
@@ -190,7 +191,7 @@ class Retries(unittest.TestCase):
 
 
 class UnconditionalCleanup(unittest.TestCase):
-    EXPECTED = ["cancel_navigation", "disable_motion"]
+    EXPECTED = ["cancel_navigation", "disable_motion", "disarm_monitor_cleanup"]
 
     def test_cleanup_after_success(self):
         backend = seq.DryRunBackend()

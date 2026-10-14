@@ -48,7 +48,7 @@ class PreflightHappyPath(unittest.TestCase):
 
     def test_hand_services_are_resolved_for_the_configured_side(self):
         probe = FakeProbe()
-        pf.run_preflight(r.AUTO_RELEASE, probe, "left")
+        pf.run_preflight(r.DELIVER, probe, "left")
         self.assertIn("/hand_left/release", probe.service_queries)
         self.assertNotIn("/hand_right/release", probe.service_queries)
 
@@ -100,8 +100,10 @@ class PreflightCollectsEveryBlocker(unittest.TestCase):
         self.assertIn("/arm/plan_grasp_from_point", check.detail)
 
     def test_summary_is_readable_in_both_outcomes(self):
-        self.assertIn("preflight OK", pf.run_preflight(r.AUTO_RELEASE, FakeProbe(), "right").summary())
-        bad = pf.run_preflight(r.AUTO_RELEASE, FakeProbe(missing_services=["/hand_right/grasp"]), "right")
+        self.assertIn("preflight OK",
+                      pf.run_preflight(r.NAVIGATE_REPORT, FakeProbe(), "right").summary())
+        bad = pf.run_preflight(r.NAVIGATE_REPORT,
+                               FakeProbe(missing_services=["/navigation/navigate"]), "right")
         self.assertIn("preflight FAILED", bad.summary())
 
 
@@ -116,13 +118,26 @@ class UnresolvedCapability(unittest.TestCase):
     def test_grasp_preflight_fails_with_everything_else_available(self):
         result = pf.run_preflight(r.GRASP, FakeProbe(), "right")
         self.assertFalse(result.ok)
-        self.assertEqual(len(result.blockers), 1, result.blockers)
+        # frame_contract and stow_pose: both unresolved decisions, not runtime state.
+        self.assertEqual(len(result.blockers), 2, result.blockers)
+        self.assertEqual(result.unresolved_blockers, result.blockers)
+
+    def test_delivery_preflight_names_every_known_missing_requirement(self):
+        """Known gaps must surface BEFORE motion, not after the hand opens."""
+        result = pf.run_preflight(r.DELIVER, FakeProbe(), "right")
+        self.assertFalse(result.ok)
+        keys = {c.capability for c in result.checks if not c.ok}
+        for expected in (caps.FRAME_CONTRACT, caps.HANDOVER_POSE,
+                         caps.RELEASE_COMPLETION, caps.HOME_POSE):
+            self.assertIn(expected, keys)
         self.assertEqual(result.unresolved_blockers, result.blockers)
 
     def test_unresolved_blockers_are_separable_from_runtime_ones(self):
         probe = FakeProbe(missing_services=["/hand_right/grasp"])
         result = pf.run_preflight(r.GRASP, probe, "right")
-        self.assertEqual(len(result.unresolved_blockers), 1)
+        # frame_contract + stow_pose are unresolved decisions; the missing hand
+        # service is runtime state. Both appear, and they are distinguishable.
+        self.assertEqual(len(result.unresolved_blockers), 2)
         self.assertGreater(len(result.blockers), len(result.unresolved_blockers))
 
 

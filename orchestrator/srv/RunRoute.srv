@@ -9,6 +9,13 @@ string route         # optional guard: must be empty or match the service's own 
 string target        # route-dependent: semantic waypoint name, perception label, ...
 string start_step    # "" = from the beginning; else resume at this step name
 bool   dry_run       # true = force a dry run; false = use the node's enable_motion
+# Session token issued by HandoverState.mark_awaiting_pull and handed to the
+# monitor when it is armed. A release request MUST quote it: without it the
+# orchestrator cannot tell a pull detected during THIS handover from one
+# detected during an earlier handover and delivered late, because the request
+# carries no origin time and stamping its RECEIPT time proves only when it
+# arrived. A tokenless release request is refused. See docs/DELIVERY_FLOW.md.
+string event_token
 ---
 bool     success
 string   message
@@ -18,3 +25,5 @@ string[] blockers            # every preflight blocker found; empty when ready
 string   final_step          # last step reached (the failing one when success=false)
 bool     motion_issued       # true only if a real motion command was actually sent
 bool     dry_run             # how the route was actually executed
+string   object_state        # NONE | HELD | RELEASE_COMMANDED | UNCERTAIN
+bool     transfer_verified   # false unless the hand contract actually established transfer

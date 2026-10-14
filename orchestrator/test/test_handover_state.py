@@ -20,11 +20,13 @@ from orchestrator.execution_lock import Busy, ExecutionLock  # noqa: E402
 NODE = os.path.join(HERE, "..", "scripts", "orchestrator_node.py")
 
 
-def holding_and_awaiting(authorized=True, now=10.0, side="right"):
-    state = hs.HandoverState()
+def holding_and_awaiting(authorized=True, now=10.0, side="right", require_token=True):
+    """Returns (state, token). The token is what a release request must quote."""
+    state = hs.HandoverState(require_event_token=require_token)
     state.begin(side, "bottle", release_authorized=authorized)
-    state.mark_awaiting_pull(now)
-    return state
+    token = hs.new_session_token()
+    state.mark_awaiting_pull(now, token)
+    return state, token
 
 
 class PhasesAndBookkeeping(unittest.TestCase):
@@ -49,7 +51,67 @@ class PhasesAndBookkeeping(unittest.TestCase):
 
     def test_awaiting_requires_a_held_object(self):
         with self.assertRaises(RuntimeError):
-            hs.HandoverState().mark_awaiting_pull(0.0)
+            hs.HandoverState().mark_awaiting_pull(0.0, hs.new_session_token())
+
+    def test_awaiting_requires_a_token(self):
+        """One authoritative token: it is supplied, never minted here."""
+        state = hs.HandoverState()
+        state.begin("right", "bottle", True)
+        with self.assertRaises(ValueError):
+            state.mark_awaiting_pull(0.0, "")
+
+    def test_the_token_generator_is_unique_and_opaque(self):
+        tokens = {hs.new_session_token() for _ in range(200)}
+        self.assertEqual(len(tokens), 200)
+        self.assertTrue(all(t and t.isalnum() for t in tokens))
+
+    def test_object_states_are_the_documented_set(self):
+        self.assertEqual(hs.OBJECT_STATES,
+                         ("NONE", "HELD", "RELEASE_COMMANDED", "RELEASE_SETTLED",
+                          "UNCERTAIN"))
+        self.assertEqual(hs.RELEASED_STATES, ("RELEASE_COMMANDED", "RELEASE_SETTLED"))
+
+    def test_command_ack_settling_and_transfer_are_three_different_things(self):
+        """A command ack alone must not permit retraction."""
+        state = hs.HandoverState()
+        state.begin("right", "bottle", True)
+        state.mark_awaiting_pull(1.0, hs.new_session_token())
+        state.mark_release_commanded()
+        allowed, reason = state.retraction_allowed()
+        self.assertFalse(allowed, "a command acknowledgement is not physical completion")
+        self.assertIn("NOT_READY", reason)
+        self.assertIn("require_settle", reason)
+
+        state.mark_release_settled("structured settled flag from the hand service")
+        allowed, reason = state.retraction_allowed()
+        self.assertTrue(allowed)
+        self.assertIn("NOT verified", reason, "transfer must still not be claimed")
+
+    def test_settling_cannot_be_asserted_without_evidence(self):
+        """A config flag is not evidence about another package's behaviour."""
+        state = hs.HandoverState()
+        state.begin("right", "bottle", True)
+        state.mark_awaiting_pull(1.0, hs.new_session_token())
+        with self.assertRaises(ValueError) as ctx:
+            state.mark_release_settled("")
+        self.assertIn("not evidence", str(ctx.exception))
+        self.assertIn("require_settle", str(ctx.exception))
+
+    def test_there_is_no_override_for_retracting_on_a_command_ack(self):
+        """No constructor argument or flag may permit it."""
+        import inspect
+        params = inspect.signature(hs.HandoverState.__init__).parameters
+        for name in params:
+            self.assertNotIn("allow", name.lower(),
+                             "no override argument may exist: found %r" % name)
+            self.assertNotIn("retract", name.lower())
+        state = hs.HandoverState()
+        state.begin("right", "b", True)
+        state.mark_awaiting_pull(1.0, hs.new_session_token())
+        state.mark_release_commanded()
+        allowed, reason = state.retraction_allowed()
+        self.assertFalse(allowed)
+        self.assertIn("no override", reason)
 
     def test_each_handover_gets_a_new_session(self):
         state = hs.HandoverState()
@@ -59,14 +121,16 @@ class PhasesAndBookkeeping(unittest.TestCase):
         self.assertGreater(state.snapshot().session, first)
 
     def test_released_clears_the_held_object(self):
-        state = holding_and_awaiting()
-        state.mark_released()
+        state, token = holding_and_awaiting()
+        state.mark_done()
         snap = state.snapshot()
         self.assertFalse(snap.holding)
         self.assertEqual(snap.phase, hs.IDLE)
 
     def test_phases_are_the_documented_set(self):
-        self.assertEqual(hs.PHASES, ("IDLE", "MOVING_TO_POSE", "AWAITING_PULL", "RELEASING"))
+        self.assertEqual(hs.PHASES,
+                         ("IDLE", "MOVING_TO_POSE", "ARMING", "AWAITING_PULL", "RELEASING"))
+        self.assertEqual(hs.ACCEPTING_PHASES, ("ARMING", "AWAITING_PULL"))
 
 
 class RequestsAreRejectedUnlessLegitimate(unittest.TestCase):
@@ -77,7 +141,7 @@ class RequestsAreRejectedUnlessLegitimate(unittest.TestCase):
 
     def test_rejected_while_still_moving_to_the_pose(self):
         """The detector must never be armed during arm movement."""
-        state = hs.HandoverState()
+        state = hs.HandoverState(require_event_token=False)
         state.begin("right", "bottle", True)
         v = state.request_release(1.0)
         self.assertFalse(v.ok)
@@ -85,25 +149,25 @@ class RequestsAreRejectedUnlessLegitimate(unittest.TestCase):
         self.assertIn("MOVING_TO_POSE", v.reason)
 
     def test_rejected_when_release_is_not_authorized(self):
-        state = holding_and_awaiting(authorized=False)
-        v = state.request_release(11.0)
+        state, token = holding_and_awaiting(authorized=False)
+        v = state.request_release(11.0, event_token=token)
         self.assertFalse(v.ok)
         self.assertIn("release authorization absent", v.reason)
         self.assertIn("detection-only", v.reason)
 
     def test_rejected_as_duplicate_while_one_is_pending(self):
-        state = holding_and_awaiting()
-        self.assertTrue(state.request_release(11.0).ok)
-        v = state.request_release(11.1)
+        state, token = holding_and_awaiting()
+        self.assertTrue(state.request_release(11.0, event_token=token).ok)
+        v = state.request_release(11.1, event_token=token)
         self.assertFalse(v.ok)
         self.assertIn("duplicate", v.reason)
         self.assertIn("already pending", v.reason)
 
     def test_rejected_as_duplicate_after_one_was_consumed(self):
-        state = holding_and_awaiting()
-        state.request_release(11.0)
+        state, token = holding_and_awaiting()
+        state.request_release(11.0, event_token=token)
         self.assertIsNotNone(state.consume_pending(11.2))
-        v = state.request_release(11.3)
+        v = state.request_release(11.3, event_token=token)
         self.assertFalse(v.ok)
         self.assertIn("duplicate", v.reason)
         self.assertIn("already accepted", v.reason)
@@ -111,46 +175,47 @@ class RequestsAreRejectedUnlessLegitimate(unittest.TestCase):
     def test_rejected_as_stale_after_the_awaiting_window(self):
         state = hs.HandoverState(max_awaiting_sec=5.0)
         state.begin("right", "bottle", True)
-        state.mark_awaiting_pull(100.0)
-        v = state.request_release(200.0)
+        tok = hs.new_session_token()
+        state.mark_awaiting_pull(100.0, tok)
+        v = state.request_release(200.0, event_token=tok)
         self.assertFalse(v.ok)
         self.assertIn("stale", v.reason)
 
     def test_rejected_after_release_already_happened(self):
-        state = holding_and_awaiting()
-        state.request_release(11.0)
+        state, token = holding_and_awaiting()
+        state.request_release(11.0, event_token=token)
         state.consume_pending(11.1)
-        state.mark_released()
-        v = state.request_release(12.0)
+        state.mark_done()
+        v = state.request_release(12.0, event_token=token)
         self.assertFalse(v.ok)
         self.assertIn("no object is recorded as held", v.reason)
 
     def test_rejected_after_abandon(self):
-        state = holding_and_awaiting()
+        state, token = holding_and_awaiting()
         state.abandon("timeout")
-        v = state.request_release(12.0)
+        v = state.request_release(12.0, event_token=token)
         self.assertFalse(v.ok)
         self.assertIn("not waiting", v.reason)
 
     def test_a_rejected_request_records_nothing(self):
-        state = holding_and_awaiting(authorized=False)
-        state.request_release(11.0)
+        state, token = holding_and_awaiting(authorized=False)
+        state.request_release(11.0, event_token=token)
         self.assertFalse(state.snapshot().pending)
         self.assertIsNone(state.consume_pending(11.1))
 
 
 class AcceptedRequestsAreRecordedNotExecuted(unittest.TestCase):
     def test_a_valid_request_is_accepted_and_recorded(self):
-        state = holding_and_awaiting()
-        v = state.request_release(11.0)
+        state, token = holding_and_awaiting()
+        v = state.request_release(11.0, event_token=token)
         self.assertTrue(v.ok, v.reason)
         self.assertEqual(v.sequence, 1)
         self.assertTrue(state.snapshot().pending)
         self.assertIn("the owning task will perform the release", v.reason)
 
     def test_the_task_consumes_the_event_exactly_once(self):
-        state = holding_and_awaiting()
-        state.request_release(11.0)
+        state, token = holding_and_awaiting()
+        state.request_release(11.0, event_token=token)
         event = state.consume_pending(11.2)
         self.assertIsNotNone(event)
         self.assertEqual(event.sequence, 1)
@@ -158,25 +223,30 @@ class AcceptedRequestsAreRecordedNotExecuted(unittest.TestCase):
         self.assertIsNone(state.consume_pending(11.3))
 
     def test_consuming_moves_the_task_into_releasing(self):
-        state = holding_and_awaiting()
-        state.request_release(11.0)
+        state, token = holding_and_awaiting()
+        state.request_release(11.0, event_token=token)
         state.consume_pending(11.2)
         self.assertEqual(state.snapshot().phase, hs.RELEASING)
 
     def test_a_new_session_allows_a_new_release(self):
-        state = holding_and_awaiting()
-        state.request_release(11.0)
+        state, token = holding_and_awaiting()
+        state.request_release(11.0, event_token=token)
         state.consume_pending(11.1)
-        state.mark_released()
+        state.mark_done()
         state.begin("right", "cup", True)          # next handover
-        state.mark_awaiting_pull(20.0)
-        self.assertTrue(state.request_release(21.0).ok)
+        token2 = hs.new_session_token()
+        state.mark_awaiting_pull(20.0, token2)
+        self.assertTrue(state.request_release(21.0, event_token=token2).ok)
 
     def test_nothing_in_this_module_performs_io(self):
-        with open(os.path.join(HERE, "..", "src", "orchestrator", "handover_state.py")) as f:
-            code = f.read()
-        for forbidden in ("rospy", "ServiceProxy", "/hand_", "release()", "subprocess", "socket"):
-            self.assertNotIn(forbidden, code)
+        """Executable code only: the docstrings legitimately discuss endpoints."""
+        code = executable_source(
+            os.path.join(HERE, "..", "src", "orchestrator", "handover_state.py"))
+        # Actual I/O constructs only: a message string may legitimately NAME a
+        # service it explains, which is not the same as calling one.
+        for forbidden in ("import rospy", "ServiceProxy(", "subprocess", "socket",
+                          "requests.", "urllib", "open("):
+            self.assertNotIn(forbidden, code, "handover_state.py must stay pure: %r" % forbidden)
 
 
 class NoDeadlockAndNoLockBypass(unittest.TestCase):
@@ -184,19 +254,19 @@ class NoDeadlockAndNoLockBypass(unittest.TestCase):
 
     def test_a_request_succeeds_while_the_task_holds_the_execution_lock(self):
         lock = ExecutionLock()
-        state = holding_and_awaiting()
+        state, token = holding_and_awaiting()
         with lock.hold("deliver (awaiting pull)"):
             self.assertTrue(lock.busy)
-            v = state.request_release(11.0)      # must not block, must not be refused
+            v = state.request_release(11.0, event_token=token)      # must not block, must not be refused
             self.assertTrue(v.ok, v.reason)
         self.assertFalse(lock.busy)
 
     def test_validation_returns_promptly_while_the_lock_is_held(self):
         lock = ExecutionLock()
-        state = holding_and_awaiting()
+        state, token = holding_and_awaiting()
         with lock.hold("deliver"):
             start = time.time()
-            state.request_release(11.0)
+            state.request_release(11.0, event_token=token)
             self.assertLess(time.time() - start, 1.0, "validation appears to be blocking")
 
     def test_reacquiring_the_execution_lock_would_have_been_refused(self):
@@ -208,12 +278,12 @@ class NoDeadlockAndNoLockBypass(unittest.TestCase):
                     self.fail("a nested route must not be entered")
 
     def test_concurrent_requests_accept_exactly_one(self):
-        state = holding_and_awaiting()
+        state, token = holding_and_awaiting()
         results, errors = [], []
 
         def worker():
             try:
-                results.append(state.request_release(11.0))
+                results.append(state.request_release(11.0, event_token=token))
             except Exception as exc:              # noqa: BLE001
                 errors.append(exc)
 
@@ -227,7 +297,7 @@ class NoDeadlockAndNoLockBypass(unittest.TestCase):
         self.assertEqual(sum(1 for r in results if r.ok), 1, "exactly one must be accepted")
 
     def test_the_task_side_and_monitor_side_do_not_deadlock_each_other(self):
-        state = holding_and_awaiting()
+        state, token = holding_and_awaiting()
         stop = threading.Event()
 
         def consumer():
@@ -238,7 +308,7 @@ class NoDeadlockAndNoLockBypass(unittest.TestCase):
         thread.start()
         try:
             for _ in range(200):
-                state.request_release(11.0)
+                state.request_release(11.0, event_token=token)
                 state.snapshot()
         finally:
             stop.set()

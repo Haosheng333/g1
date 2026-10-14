@@ -10,10 +10,10 @@ from orchestrator import routes as r  # noqa: E402
 
 
 class RouteCatalogue(unittest.TestCase):
-    def test_the_four_routes_exist(self):
-        self.assertEqual(
-            sorted(r.ROUTES), ["auto_release", "deliver", "grasp", "navigate_report"]
-        )
+    def test_the_three_routes_exist(self):
+        """auto_release was deleted: its steps live inside deliver now."""
+        self.assertEqual(sorted(r.ROUTES), ["deliver", "grasp", "navigate_report"])
+        self.assertFalse(hasattr(r, "AUTO_RELEASE"))
 
     def test_unknown_route_raises_listing_the_known_ones(self):
         with self.assertRaises(KeyError) as ctx:
@@ -46,9 +46,22 @@ class GraspIsBlocked(unittest.TestCase):
     def test_grasp_is_not_ready_in_principle(self):
         self.assertFalse(r.GRASP.ready_in_principle)
         blockers = r.GRASP.blockers()
-        self.assertEqual(len(blockers), 1)
-        self.assertIn("torso_link", blockers[0])
-        self.assertIn("base_link", blockers[0])
+        # frame contract + the stow pose a grasp must leave the arm in.
+        self.assertEqual(len(blockers), 2, blockers)
+        joined = " | ".join(blockers)
+        self.assertIn("torso_link", joined)
+        self.assertIn("base_link", joined)
+        self.assertIn("stow", joined)
+
+    def test_delivery_declares_its_known_missing_requirements(self):
+        """So preflight refuses up front instead of after the hand opens."""
+        for key in (caps.HANDOVER_POSE, caps.RELEASE_COMPLETION, caps.HOME_POSE):
+            self.assertIn(key, r.DELIVER.requires)
+        self.assertFalse(r.DELIVER.ready_in_principle)
+        joined = " | ".join(r.DELIVER.blockers())
+        self.assertIn("no handover pose", joined)
+        self.assertIn("no home pose", joined)
+        self.assertIn("require_settle", joined)
 
     def test_the_blocker_explains_the_10mm_urdf_disagreement(self):
         blocker = r.GRASP.blockers()[0]
@@ -56,8 +69,14 @@ class GraspIsBlocked(unittest.TestCase):
         self.assertIn("0.044", blocker)
         self.assertIn("0.054", blocker)
 
+    def test_deliver_now_also_requires_the_frame_contract(self):
+        """It moves the arm to a handover pose, so it needs the planner."""
+        self.assertIn(caps.FRAME_CONTRACT, r.DELIVER.requires)
+        self.assertIn(caps.ARM_PLANNING, r.DELIVER.requires)
+        self.assertFalse(r.DELIVER.ready_in_principle)
+
     def test_the_other_routes_are_ready_in_principle(self):
-        for route in (r.NAVIGATE_REPORT, r.DELIVER, r.AUTO_RELEASE):
+        for route in (r.NAVIGATE_REPORT,):
             self.assertTrue(route.ready_in_principle, route.name)
             self.assertEqual(route.blockers(), [])
 
@@ -106,9 +125,9 @@ class GraspOrder(unittest.TestCase):
 
 class StartStepResume(unittest.TestCase):
     def test_empty_start_step_runs_everything(self):
-        skipped, to_run = r.plan_steps(r.AUTO_RELEASE, "")
+        skipped, to_run = r.plan_steps(r.DELIVER, "")
         self.assertEqual(skipped, [])
-        self.assertEqual([s.name for s in to_run], r.AUTO_RELEASE.step_names)
+        self.assertEqual([s.name for s in to_run], r.DELIVER.step_names)
 
     def test_resume_skips_the_earlier_steps(self):
         skipped, to_run = r.plan_steps(r.NAVIGATE_REPORT, "detect_object")
