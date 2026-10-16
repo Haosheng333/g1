@@ -42,9 +42,9 @@ interface exists or a unit test passes.
 |---|---|
 | `navigate_report` route (real run) | localization, map, `/joint_states`, navigation, perception all absent on the bench |
 | `arm_planning` plan generation | `torch`/`trimesh`/`fcl` absent; two `*_wrist_roll_rubber_hand.STL` meshes missing |
-| Tactile pull detection end-to-end | no tactile topic exists; SDK unverified, Python 3.8 vs ≥3.9 conflict; thresholds uncalibrated |
+| Force pull detection end-to-end | **updated 2026-10-14:** the hand (BrainCo Revo2) and the SDK are confirmed, and the Python 3.8-vs-≥3.9 conflict is retired. What remains is the force **schema** — the SDK call, field names, channel→finger mapping, **unit** and rate. The threshold is no longer a blocker: 3 N per channel is the requested setting. |
 | `arm_control` execution | `unitree_sdk2py` absent; never invoked by any reachable route |
-| Hand open/close | `bc_stark_sdk` absent |
+| Hand open/close | SDK available, but no code here has run against it — orchestrator-to-SDK integration is unverified |
 | `grasp` route (real run) | the `pelvis`/`base_link`/`torso_link` frame contract is unresolved |
 
 ### 1.3 Missing or unreachable
@@ -73,12 +73,14 @@ exists in no route.
 
 ---
 
-## 1b. Tactile units are not established by reading the device
+## 1b. Force units are not established by reading the device
 
-`main_mod.pyi` gives the authoritative field list — `TouchFingerItem` with
-`normal_force1/2/3`, `tangential_force1/2/3`, `tangential_direction1/2/3`,
-`self_proximity1/2`, `mutual_proximity`, `status`, all `builtins.int`. That
-settles the *schema*. It does **not** settle the *units*.
+A field list of the shape `TouchFingerItem` — `normal_force1/2/3`,
+`tangential_force1/2/3`, `tangential_direction1/2/3`, `self_proximity1/2`,
+`mutual_proximity`, `status`, all `builtins.int` — would settle the *schema*.
+**It has not been read off this robot's SDK and must be confirmed there**; it is
+recorded here as the expected shape only. Either way it does **not** settle the
+*units*.
 
 Reading numbers off the device does not establish physical units either. A
 stream of integers tells you the range and the noise, not whether a count is
