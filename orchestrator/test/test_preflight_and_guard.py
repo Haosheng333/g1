@@ -110,15 +110,15 @@ class PreflightCollectsEveryBlocker(unittest.TestCase):
 class UnresolvedCapability(unittest.TestCase):
     """An unresolved decision is a blocker no amount of running hardware clears."""
 
-    def test_frame_contract_fails_even_with_a_perfect_probe(self):
-        check = pf.check_capability(caps.FRAME_CONTRACT, FakeProbe(), "right")
+    def test_perception_extrinsics_fails_even_with_a_perfect_probe(self):
+        check = pf.check_capability(caps.PERCEPTION_EXTRINSICS, FakeProbe(), "right")
         self.assertFalse(check.ok)
         self.assertTrue(check.unresolved)
 
     def test_grasp_preflight_fails_with_everything_else_available(self):
         result = pf.run_preflight(r.GRASP, FakeProbe(), "right")
         self.assertFalse(result.ok)
-        # frame_contract and stow_pose: both unresolved decisions, not runtime state.
+        # perception_extrinsics and stow_pose: unresolved decisions, not runtime state.
         self.assertEqual(len(result.blockers), 2, result.blockers)
         self.assertEqual(result.unresolved_blockers, result.blockers)
 
@@ -127,15 +127,22 @@ class UnresolvedCapability(unittest.TestCase):
         result = pf.run_preflight(r.DELIVER, FakeProbe(), "right")
         self.assertFalse(result.ok)
         keys = {c.capability for c in result.checks if not c.ok}
-        for expected in (caps.FRAME_CONTRACT, caps.HANDOVER_POSE,
-                         caps.RELEASE_COMPLETION, caps.HOME_POSE):
+        for expected in (caps.HANDOVER_POSE, caps.RELEASE_COMPLETION, caps.HOME_POSE):
             self.assertIn(expected, keys)
+        # Deliver converts no observation and runs no perception, so the camera
+        # extrinsics are NOT one of its blockers. They belong to grasp and, by
+        # composition, to deliver_task.
+        self.assertNotIn(caps.PERCEPTION_EXTRINSICS, keys)
+        self.assertIn(caps.PERCEPTION_EXTRINSICS,
+                      {c.capability for c in
+                       pf.run_preflight(r.ROUTES["deliver_task"], FakeProbe(),
+                                        "right").checks if not c.ok})
         self.assertEqual(result.unresolved_blockers, result.blockers)
 
     def test_unresolved_blockers_are_separable_from_runtime_ones(self):
         probe = FakeProbe(missing_services=["/hand_right/grasp"])
         result = pf.run_preflight(r.GRASP, probe, "right")
-        # frame_contract + stow_pose are unresolved decisions; the missing hand
+        # perception_extrinsics + stow_pose are unresolved decisions; the missing hand
         # service is runtime state. Both appear, and they are distinguishable.
         self.assertEqual(len(result.unresolved_blockers), 2)
         self.assertGreater(len(result.blockers), len(result.unresolved_blockers))

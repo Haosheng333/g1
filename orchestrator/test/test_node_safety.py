@@ -179,7 +179,8 @@ class DryRunIsTheDefault(PreflightPatch):
             line = line.split("#")[0].strip()
             if line:
                 names.append(line.split()[1])
-        self.assertEqual(names, ["route", "target", "start_step", "dry_run", "event_token"])
+        self.assertEqual(names, ["route", "target", "destination", "start_step",
+                                 "dry_run", "event_token"])
         for forbidden in ("force", "enable_motion", "allow_motion", "execute"):
             self.assertNotIn(forbidden, names)
 
@@ -295,7 +296,7 @@ class NoRoboticsInsideOrchestrator(unittest.TestCase):
                 "numpy", "scipy", "torch",                       # no maths libraries at all
                 "tf2_ros", "tf.Transform", "lookupTransform",    # no TF work
                 "quaternion", "euler_from", "math.cos", "math.sin",
-                "inverse_kinematics", "plan_to_pose(",           # no IK/planning
+                "inverse_kinematics",                            # no IK implemented here
                 "costmap", "Costmap", "astar", "dwa",            # no navigation algorithms
                 "cv_bridge", "YOLO", "ultralytics",              # no perception
                 "unitree", "arm_sdk", "lowcmd",                  # no direct hardware
@@ -304,6 +305,39 @@ class NoRoboticsInsideOrchestrator(unittest.TestCase):
                     forbidden, code, "%s must not contain %r" % (os.path.basename(path), forbidden)
                 )
 
+    def test_planning_is_delegated_never_implemented(self):
+        """The orchestrator may CALL the planner; it may not BE one.
+
+        `plan_to_pose` used to be a forbidden substring, which stopped working
+        once the adapters were wired to the real /arm/plan_to_pose service. The
+        intent is unchanged: no planning function may be defined here, and every
+        mention must be a service proxy or the service name.
+        """
+        code = executable_source(NODE_SOURCE)
+        for forbidden in ("def plan_to_pose", "def plan_grasp_from_point",
+                          "def _solve_ik", "def _ik", "def forward_kinematics"):
+            self.assertNotIn(forbidden, code,
+                             "the orchestrator must not define %r" % forbidden)
+        # Every occurrence must be the service path, the proxy attribute, the
+        # generated type, or a label inside a message string -- never a local
+        # definition or a local call.
+        allowed = ("/arm/plan_to_pose", "/arm/plan_grasp_from_point",
+                   "self._plan_to_pose", "self._plan_grasp_from_point",
+                   "PlanToPose", "PlanGraspFromPoint",
+                   '"plan_to_pose', '"plan_grasp_from_point')
+        for line in code.splitlines():
+            if "plan_to_pose" not in line and "plan_grasp_from_point" not in line:
+                continue
+            self.assertTrue(any(a in line for a in allowed),
+                            "unexpected planning reference: %s" % line.strip())
+
+    def test_the_arm_services_are_called_not_reimplemented(self):
+        """Positive check: the three downstream services are actually wired."""
+        code = executable_source(NODE_SOURCE)
+        for service in ("/arm/plan_to_pose", "/arm/plan_grasp_from_point",
+                        "/arm/move_arm_joints"):
+            self.assertIn(service, code, "%s is not wired up" % service)
+
     def test_the_pure_modules_do_not_import_ros(self):
         for name in sorted(os.listdir(PKG_SRC)):
             if not name.endswith(".py"):
@@ -311,15 +345,29 @@ class NoRoboticsInsideOrchestrator(unittest.TestCase):
             code = executable_source(os.path.join(PKG_SRC, name))
             self.assertNotIn("import rospy", code, name)
 
-    def test_only_the_four_routes_are_advertised(self):
+    def test_only_the_five_routes_are_advertised(self):
+        """run_deliver_task is the full-task entry point (spec 0.4 / 6.2).
+
+        It composes the grasp and delivery steps IN-PROCESS under one execution
+        lock; it must never appear as a service call from inside the node, which
+        would deadlock against that same lock.
+        """
         code = executable_source(NODE_SOURCE)
         advertised = sorted(set(re.findall(r'"(/orchestrator/run_[a-z_]+)"', code)))
         self.assertEqual(advertised, [
             "/orchestrator/run_auto_release",
             "/orchestrator/run_deliver",
+            "/orchestrator/run_deliver_task",
             "/orchestrator/run_grasp",
             "/orchestrator/run_navigate_report",
         ])
+
+    def test_no_route_calls_another_route_service(self):
+        """A composed route must not re-enter the orchestrator over ROS."""
+        code = executable_source(NODE_SOURCE)
+        proxies = re.findall(r'ServiceProxy\(\s*"([^"]+)"', code)
+        self.assertEqual([p for p in proxies if p.startswith("/orchestrator/")], [],
+                         "the node builds a client for its own route service")
 
     def test_perception_results_are_never_frame_converted(self):
         """frame_id must be passed through, never recomputed."""

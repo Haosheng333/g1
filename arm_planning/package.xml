@@ -20,6 +20,9 @@
   <exec_depend>message_runtime</exec_depend>
 
   <depend>rospy</depend>
+  <!-- handle_convert_observation looks up torso_link <- base_link. -->
+  <depend>tf2_ros</depend>
+  <depend>geometry_msgs</depend>
   <depend>std_msgs</depend>
   <exec_depend>python3-rospkg</exec_depend>
   <exec_depend>python3-numpy</exec_depend>

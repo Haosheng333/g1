@@ -1,0 +1,43 @@
+# /arm/convert_observation  --  one observed point -> the planner's frame.
+#
+# WHY THIS SERVICE EXISTS. perception reports a position in `base_link`; the
+# planner's services take `torso_link`. The conversion needs a live TF lookup
+# carrying the current waist yaw, plus a FIXED convention correction because the
+# TF `torso_link` and the planner's `torso_link` are not the same frame (see
+# below). Both of those are coordinate work, so they live here in arm_planning,
+# not in the orchestrator -- which passes the observation through this interface
+# and performs no TF mathematics of its own.
+#
+# THE TWO torso_link CONVENTIONS. The live TF tree is published from
+# slam/urdf/g1_23dof_mode_10.urdf, whose waist_yaw_joint origin is
+# z = 0.044 above pelvis. arm_kinematics.yaml is derived from
+# arm_planning/urdf/g1_23dof.urdf, whose waist_yaw_joint origin is z = 0.054.
+# pelvis -> shoulder_pitch is IDENTICAL in both (0.044 + 0.24778 =
+# 0.054 + 0.23778 = 0.29178), so neither URDF is wrong: they place the same
+# physical robot's torso_link datum 10 mm apart. The response reports the
+# correction that was applied, so a caller can see it rather than trust it.
+#
+# UNITS AND DIRECTION. point is metres in source_frame. planner_point is metres
+# in the planner's torso_link convention. The transform direction used is
+# target <- source, i.e. the point is mapped INTO torso_link.
+string    source_frame          # frame `point` is expressed in; normally "base_link"
+float64[] point                 # exactly 3: [x, y, z] in metres
+time      stamp                 # when the observation was taken; see stamp_is_observation_time
+# FALSE means `stamp` is only an upper bound (for example the caller's receipt
+# time) because the producer does not timestamp its output. perception's
+# GetObjectPosition.srv has NO stamp field, so the orchestrator must pass false
+# today. With false this service refuses when the waist has moved more than
+# max_waist_delta_rad between `stamp` and the transform it used, rather than
+# silently pairing an old observation with the latest waist pose.
+bool      stamp_is_observation_time
+# <= 0 uses the node's configured default. Radians.
+float64   max_waist_delta_rad
+---
+bool      success
+string    message
+float64[] planner_point         # exactly 3: [x, y, z] in metres, planner torso_link
+string    planner_frame         # always "torso_link", in the planner's convention
+float64   waist_yaw_rad         # the waist angle in the transform actually used
+float64   transform_age_s       # age of the transform relative to `stamp`
+float64[] convention_offset     # the fixed TF->planner correction applied, metres
+bool      used_latest_transform # true when `stamp` could not be honoured exactly

@@ -84,26 +84,36 @@ NAVIGATE_REPORT = Route(
 # --- grasp: NOT_READY until the frame contract is resolved ---------------------------
 #
 # Every step is declared so a dry run still traverses the whole sequence and the
-# blocker is reported against a real plan, but FRAME_CONTRACT is unresolved so
-# this route can never execute for real.
+# blocker is reported against a real plan. The frame conversion is now
+# implemented (caps.PLANNER_FRAME_CONVERSION, a service), but
+# caps.PERCEPTION_EXTRINSICS is still unresolved, so this route cannot execute
+# for real: a correct base->planner transform cannot repair a point computed
+# with the wrong camera extrinsics.
 
 GRASP = Route(
     name="grasp",
     description="Navigate to the object, plan the full grasp, then execute it segment by segment",
     requires=(caps.LOCALIZATION, caps.MAP, caps.JOINT_STATES, caps.NAVIGATION,
               caps.MOTION_GATE, caps.PERCEPTION, caps.ARM_PLANNING, caps.ARM_CONTROL,
-              caps.HAND, caps.FRAME_CONTRACT, caps.STOW_POSE),
+              caps.HAND, caps.PLANNER_FRAME_CONVERSION, caps.PERCEPTION_EXTRINSICS,
+              caps.STOW_POSE),
     steps=(
         Step("await_localization", "await_localization", caps.LOCALIZATION),
         Step("enable_motion", "enable_motion", caps.MOTION_GATE, motion=True),
         Step("navigate", "navigate", caps.NAVIGATION, motion=True,
              description="drive to the object's waypoint"),
         Step("detect_object", "detect_object", caps.PERCEPTION),
-        Step("to_planner_frame", "to_planner_frame", caps.FRAME_CONTRACT,
-             description="BLOCKED: perception frame -> torso_link, owned by no one yet"),
-        # Everything below moves nothing until the whole grasp has been planned.
+        Step("to_planner_frame", "to_planner_frame", caps.PLANNER_FRAME_CONVERSION,
+             description="call arm_planning's /arm/convert_observation: base_link -> "
+                         "the planner's torso_link, incl. the 10 mm convention offset"),
+        # Everything below moves nothing until the whole grasp AND the stow
+        # recovery path have been planned and validated (spec 2.4).
         Step("plan_grasp", "plan_grasp", caps.ARM_PLANNING,
              description="plan all four segments BEFORE any arm motion (doc 13.3)"),
+        Step("plan_stow", "plan_stow", caps.STOW_POSE,
+             description="spec 2.4: plan the stow/carry recovery path from the END of "
+                         "retract BEFORE the grasp starts moving, never after the hand "
+                         "has closed"),
         Step("execute_to_pregrasp", "execute_segment", caps.ARM_CONTROL, motion=True),
         Step("open_gripper", "open_gripper", caps.HAND, motion=True),
         Step("execute_approach", "execute_segment", caps.ARM_CONTROL, motion=True),
@@ -112,8 +122,8 @@ GRASP = Route(
         Step("execute_retract", "execute_segment", caps.ARM_CONTROL, motion=True),
         Step("record_held_object", "record_held_object",
              description="the ONLY writer of held-object state; a delivery reads it"),
-        Step("execute_stow", "execute_stow", caps.ARM_CONTROL, motion=True,
-             description="bring the arm to the carry pose before walking"),
+        Step("execute_stow", "execute_segment", caps.ARM_CONTROL, motion=True,
+             description="execute the stow path planned before the grasp began"),
     ),
 )
 
@@ -136,9 +146,14 @@ DELIVER = Route(
     # Every known requirement is declared here so preflight refuses the whole
     # route up front. Discovering a missing home pose at execute_retract_home
     # would mean finding out AFTER the hand has opened.
+    # No frame conversion and no perception here: a delivery navigates to a
+    # waypoint and plans to a CONFIGURED pose already in the planner's frame, so
+    # neither PLANNER_FRAME_CONVERSION nor PERCEPTION_EXTRINSICS applies. They
+    # reach deliver_task through the grasp phase, where an observation IS
+    # converted.
     requires=(caps.LOCALIZATION, caps.MAP, caps.JOINT_STATES, caps.NAVIGATION,
               caps.MOTION_GATE, caps.ARM_PLANNING, caps.ARM_CONTROL, caps.HAND,
-              caps.TACTILE_HANDOVER, caps.FRAME_CONTRACT,
+              caps.TACTILE_HANDOVER,
               caps.HANDOVER_POSE, caps.RELEASE_COMPLETION, caps.HOME_POSE),
     steps=(
         Step("require_held_object", "require_held_object",
@@ -176,7 +191,86 @@ DELIVER = Route(
 # bound to the validation callback, which records an event and moves nothing.
 
 
-ROUTES = {r.name: r for r in (NAVIGATE_REPORT, GRASP, DELIVER)}
+# --- deliver_task: the ONE command the framework asks for ----------------------------
+#
+# WHY THIS EXISTS. Spec 0.4 / 6.2 want a single task command covering navigation
+# to the table, perception, grasp planning and execution, carrying to point B,
+# handover and return to a stowed pose. Before this, `grasp` and `deliver` were
+# two separate services and `deliver` begins with `require_held_object`, so the
+# full task needed two calls with a human deciding in between. There was no
+# full-task entry point.
+#
+# HOW IT COMPOSES. In-process: the grasp steps followed by the delivery steps,
+# walked by ONE sequencer under ONE execution lock. It deliberately does NOT
+# call /orchestrator/run_grasp or /orchestrator/run_deliver, because a route
+# holding the execution lock calling a public route service would hit its own
+# lock and be refused.
+#
+# STEP NAMES ARE DISAMBIGUATED. `await_localization`, `enable_motion` and
+# `navigate` appear in both phases. `plan_steps` resolves `start_step` with
+# `names.index()`, which takes the FIRST match, so leaving the names duplicated
+# would make a resume at "navigate" silently restart the grasp drive instead of
+# the delivery drive. The delivery-phase copies are therefore renamed; the
+# `action` each dispatches to is unchanged.
+#
+# KNOWN CONTRACT GAP, deliberately not papered over: RunRoute.srv carries ONE
+# `target` field, and this route needs TWO destinations -- the object/table
+# waypoint and the delivery point B. RouteContext has no `destination`, so the
+# delivery-phase navigate would reuse the same target. Inventing a convention
+# (splitting `target` on a separator, say) would be fabricating an interface, so
+# the route is registered with the gap recorded here and in
+# docs/DATA_PIPELINE_VALIDATION.md. It changes nothing operationally today: the
+# route inherits every unresolved capability from both phases, so preflight
+# refuses it before any step runs.
+
+
+def _rename(step: Step, new_name: str, action: str = "") -> Step:
+    """A delivery-phase copy of `step` under a non-colliding name."""
+    return Step(name=new_name, action=action or step.action, capability=step.capability,
+                motion=step.motion, description=step.description)
+
+
+def _deliver_phase_step(step: Step) -> Step:
+    """Rename a colliding step, and point the delivery drive at `destination`.
+
+    The delivery navigate dispatches to its OWN action so it reads
+    ctx.destination instead of ctx.target; `navigate` keeps reading the pickup
+    target. One implementation serves both.
+    """
+    if step.name == "navigate":
+        return _rename(step, "navigate_to_recipient", action="navigate_to_destination")
+    if step.name in _DELIVER_PHASE_RENAMES:
+        return _rename(step, _DELIVER_PHASE_RENAMES[step.name])
+    return step
+
+
+_DELIVER_PHASE_RENAMES = {
+    "await_localization": "deliver_await_localization",
+    "enable_motion": "deliver_enable_motion",
+    "navigate": "navigate_to_recipient",
+}
+
+#: Routes whose delivery leg needs a second waypoint. `run` refuses these with
+#: an empty `destination` rather than silently driving to the pickup waypoint.
+ROUTES_NEEDING_DESTINATION = ("deliver_task",)
+
+DELIVER_TASK = Route(
+    name="deliver_task",
+    description=(
+        "ONE command for the whole framework task: navigate, detect, plan and execute "
+        "the grasp, stow, carry to the delivery point, hand over on a verified pull, "
+        "retract home"
+    ),
+    # The union of both phases, so preflight refuses the whole task up front
+    # rather than discovering a missing home pose after the hand has opened.
+    requires=tuple(dict.fromkeys(GRASP.requires + DELIVER.requires)),
+    steps=GRASP.steps + tuple(
+        _deliver_phase_step(s) for s in DELIVER.steps
+    ),
+)
+
+
+ROUTES = {r.name: r for r in (NAVIGATE_REPORT, GRASP, DELIVER, DELIVER_TASK)}
 
 
 def resolve_route(name: str) -> Route:
