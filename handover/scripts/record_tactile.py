@@ -9,17 +9,17 @@ Two modes, because calibration is a two-step process:
 
   --raw        (default) record only the frames. Needs ONLY the tactile adapter
                configured, so this is what you use BEFORE you have thresholds.
-  --detector   also run a detector over the same frames and record baseline,
-               moving average, per-channel difference, candidate state and
-               events. Needs the calibration values, so use it to VALIDATE
-               thresholds you derived from a --raw recording.
+  --detector   also run a detector over the same frames and record the
+               reference frame, the per-channel consecutive-frame delta, the
+               state and any detection. Use it to CHECK the 3 N threshold
+               against a recording before trusting it.
 
     rosrun handover record_tactile.py --out /tmp/hold.csv --seconds 60
     rosrun handover record_tactile.py --out /tmp/pull.csv --seconds 20 --detector
 
 Columns: wall_sec, frame_stamp, source_valid, then one column per declared
-channel, and with --detector: baseline_*, avg_*, diff_* per enabled channel
-plus state, candidate, qualifying, event.
+channel, and with --detector: reference_*, delta_* per enabled channel plus
+state, fault, qualifying, event.
 """
 from __future__ import annotations
 
@@ -56,24 +56,16 @@ def _load_from_params(namespace: str):
         mappings=tuple(mappings))
 
     calib = dict(get("calibration", {}) or {})
-    number = lambda v: None if v is None or v == "" else float(v)
     config = TactileDetectorConfig(
         channels=adapter.specs(),
         enabled_channels=tuple(calib.get("enabled_channels", []) or []),
         release_threshold={str(k): float(v) for k, v in
                            (calib.get("release_threshold") or {}).items() if v not in (None, "")},
-        stable_tolerance={str(k): float(v) for k, v in
-                          (calib.get("stable_tolerance") or {}).items() if v not in (None, "")},
         direction={str(k): str(v) for k, v in (calib.get("direction") or {}).items() if v},
-        debounce_sec=number(calib.get("debounce_sec")),
-        baseline_frames=int(get("baseline_frames", 10)),
-        moving_average_frames=int(get("moving_average_frames", 10)),
         post_arm_suppress_sec=float(get("post_arm_suppress_sec", 1.0)),
         sample_timeout_sec=float(get("sample_timeout_sec", 0.5)),
         monitor_timeout_sec=float(get("monitor_timeout_sec", 0.0)),
-        baseline_timeout_sec=float(get("baseline_timeout_sec", 10.0)),
-        min_channels=int(calib.get("min_channels", 1)),
-        drift_gain=float(calib.get("drift_gain", 0.05)))
+        reference_timeout_sec=float(get("reference_timeout_sec", 10.0)))
     return adapter, config
 
 
@@ -117,10 +109,9 @@ def main() -> int:
     active = config.active_channels() if args.detector else []
     header = ["wall_sec", "frame_stamp", "source_valid"] + channels
     if args.detector:
-        header += (["baseline_%s" % c for c in active]
-                   + ["avg_%s" % c for c in active]
-                   + ["diff_%s" % c for c in active]
-                   + ["state", "candidate", "fault", "qualifying", "event"])
+        header += (["reference_%s" % c for c in active]
+                   + ["delta_%s" % c for c in active]
+                   + ["state", "fault", "qualifying", "event"])
 
     detector = TactileReleaseDetector(config) if args.detector else None
     if detector is not None:
@@ -142,19 +133,19 @@ def main() -> int:
         except (KeyError, TypeError, ValueError) as exc:
             rospy.logwarn_throttle(5.0, "unreadable frame: %s" % (exc,))
             writer.writerow([now, "", "0"] + ["" for _ in channels]
-                            + ([""] * (3 * len(active) + 5) if args.detector else []))
+                            + ([""] * (2 * len(active) + 4) if args.detector else []))
             rows[0] += 1
             return
         row = [now, frame.stamp, int(bool(frame.source_valid))]
         row += [frame.values.get(c, "") for c in channels]
         if detector is not None:
             event = detector.update(now, frame)
-            baseline, avg = detector.baseline, detector.moving_average()
-            row += [baseline.get(c, "") for c in active]
-            row += [avg.get(c, "") for c in active]
+            # Consecutive-frame rule: one reference frame, no moving average.
+            reference = detector.reference
+            row += [reference.get(c, "") for c in active]
             row += [event.diffs.get(c, "") for c in active]
-            row += [event.state, int(event.candidate), int(event.fault),
-                    "|".join(event.qualifying), "confirmed" if event.trigger else ""]
+            row += [event.state, int(event.fault),
+                    "|".join(event.qualifying), "detected" if event.trigger else ""]
             if event.trigger:
                 rospy.loginfo("CONFIRMED pull: %s", event.reason)
         writer.writerow(row)

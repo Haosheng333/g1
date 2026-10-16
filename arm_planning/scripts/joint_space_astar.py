@@ -7,7 +7,7 @@ Wrist roll is appended as a smooth final rotation after the 4D path.
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Tuple
 import argparse
 import heapq
 import itertools
@@ -17,7 +17,13 @@ import math
 import numpy as np
 import yaml
 
-State = tuple[int, int, int, int]
+# typing.Tuple, not tuple[...]: this is a RUNTIME assignment, not an
+# annotation, so `from __future__ import annotations` does not defer it and
+# PEP 585 subscripting of the builtin raises on Python 3.8 -- which is the
+# interpreter ROS Noetic runs. Before this, importing this module (and so
+# edge_checked_astar and collision_aware_planner, which import it) failed
+# outright on the deployment interpreter.
+State = Tuple[int, int, int, int]
 BlockedFn = Callable[[State], bool]
 
 

@@ -20,7 +20,13 @@ ARM_PLANNING = "arm_planning"
 ARM_CONTROL = "arm_control"
 HAND = "hand"
 TACTILE_HANDOVER = "tactile_handover"
-FRAME_CONTRACT = "frame_contract"
+#: The base_link -> planner torso_link conversion. IMPLEMENTED (2026-10) and
+#: owned by arm_planning: a service, so it is probed like any other.
+PLANNER_FRAME_CONVERSION = "planner_frame_conversion"
+#: perception's camera -> base_link extrinsics. A SEPARATE prerequisite, still
+#: unresolved. A correct base->planner transform cannot repair a point that was
+#: already computed with the wrong camera extrinsics.
+PERCEPTION_EXTRINSICS = "perception_extrinsics"
 #: Poses and evidence a delivery needs. These are known missing at STARTUP, so
 #: they belong in preflight: discovering them at step time would mean finding
 #: out there is no home pose only after the hand has already opened.
@@ -145,27 +151,43 @@ CAPABILITIES = {
             "remains separately unverifiable either way"
         ),
     ),
-    FRAME_CONTRACT: Capability(
-        key=FRAME_CONTRACT, owner="navigation + arm_planning",
+    PLANNER_FRAME_CONVERSION: Capability(
+        key=PLANNER_FRAME_CONVERSION, owner="arm_planning",
+        services=("/arm/convert_observation",),
+        # NOT unresolved any more. The conversion is implemented in
+        # arm_planning/src/arm_planning/frame_conversion.py and served by
+        # /arm/convert_observation, so readiness is now a runtime fact: is the
+        # service up and can it get a torso_link <- base_link transform.
+        #
+        # The 10 mm is resolved explicitly rather than assumed away. The live TF
+        # torso_link (slam/urdf/g1_23dof_mode_10.urdf, waist_yaw z=0.044) and the
+        # planner's torso_link (arm_planning/urdf/g1_23dof.urdf, z=0.054) are the
+        # same NAME for datums 10 mm apart. pelvis -> shoulder_pitch is identical
+        # in both (0.044+0.24778 == 0.054+0.23778 == 0.29178), so neither URDF is
+        # wrong and neither was modified: a declared convention translation of
+        # -0.010 m in z is applied after the TF lookup, exact at every waist
+        # angle because the waist rotates about z.
+    ),
+    PERCEPTION_EXTRINSICS: Capability(
+        key=PERCEPTION_EXTRINSICS, owner="perception",
         unresolved=(
-            "the perception -> arm_planning frame conversion is not implemented. "
-            "Navigation's half IS settled (docs/FRAME_CONTRACT.md): base_link is an "
-            "identity alias of pelvis at EVERY waist angle -- the pelvis is the "
-            "waist's parent, so it never rotates with the waist -- published once by "
-            "system_bringup with with_base_link on by default. Two things still block "
-            "a real run. (1) The two vendored URDFs place torso_link 10 mm apart (slam "
-            "waist_yaw_joint z=0.044 vs arm_planning z=0.054), the size of "
-            "arm_planning's own 0.01 m tolerance. That may be two different DEFINITIONS "
-            "of the frame rather than a wrong URDF, so the TF torso_link must be shown "
-            "to match the planner's convention before a target is routed through it; "
-            "run tools/check_urdf_agreement.py. (2) Nobody has implemented the "
-            "conversion: it is one TF lookup, torso_link <- base_link, which carries "
-            "the live waist yaw, and it belongs in arm_planning, not here. "
-            "perception's camera extrinsics are a SEPARATE requirement: they are "
-            "hard-coded for a torso-mounted D435 that DOES rotate with the waist, so "
-            "perception's output is only valid near zero waist yaw regardless of how "
-            "base_link is defined. The zero-waist limitation belongs to those "
-            "extrinsics, never to base_link"
+            "perception's camera -> base_link extrinsics are not established, and the "
+            "base_link -> planner conversion CANNOT repair a point already computed "
+            "with the wrong ones. Three separate problems, all in "
+            "perception/src/perception/m1_perception.py. (1) PROVENANCE: Extrinsics() "
+            "is hard-coded from a MuJoCo xyaxes string for a torso-mounted D435 on a "
+            "DIFFERENT robot; perception's own README says to measure and replace "
+            "R_base_opt/t_base_opt before trusting the output. (2) WAIST COUPLING: "
+            "that camera is mounted on torso_link, which DOES rotate with the waist, "
+            "while the extrinsics are expressed as a fixed base_link -> optical "
+            "transform. So the output is only valid near zero waist yaw, and this "
+            "limitation belongs to the extrinsics, never to base_link (which is an "
+            "identity alias of pelvis at every waist angle). (3) NOT A ROTATION: "
+            "_default_R_base_opt() has det = 1.0003760 and max|R^T R - I| = 3.76e-04, "
+            "so optical_to_base applies ~188 um/m of scale-and-shear as well as a "
+            "rotation. Small, but it is a calibration defect, not a convention. "
+            "Measuring the real mount, deciding how the waist angle enters, and "
+            "re-orthonormalising the matrix are perception's to do"
         ),
     ),
 }

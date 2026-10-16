@@ -131,7 +131,12 @@ class FakeBackend(seq.Backend):
         return self._record("to_planner_frame")
 
     def plan_grasp(self, ctx):
+        ctx.grasp_final_joints = [0.1, 0.2, 0.3, -0.4, 0.5]
         return self._record("plan_grasp")
+
+    def plan_stow(self, ctx):
+        """Spec 2.4: planned BEFORE the grasp moves, from the retract end pose."""
+        return self._record("plan_stow")
 
     def plan_handover_pose(self, ctx):
         return self._record("plan_handover_pose")

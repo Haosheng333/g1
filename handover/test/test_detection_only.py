@@ -108,11 +108,7 @@ CALIBRATED = {
     "~calibration": {
         "enabled_channels": ["ix_n"],
         "release_threshold": {"ix_n": 10.0},
-        "stable_tolerance": {"ix_n": 1.0},
         "direction": {"ix_n": "drop"},
-        "debounce_sec": 0.2,
-        "min_channels": 1,
-        "drift_gain": 0.05,
     },
 }
 
@@ -135,8 +131,8 @@ ARM_REQ = types.SimpleNamespace(side="right", session_token="testtoken123")
 def drive_to_trigger(node, frames=120, value_after=0.0):
     """Arm, baseline, clear suppression, then pull. Returns published events."""
     node.handle_arm(ARM_REQ)
-    # baseline + suppression at a steady level
-    for _ in range(int(1.0 / DT) + node.config.baseline_frames + 5):
+    # one reference frame + the post-arm suppression window, at a steady level
+    for _ in range(int(1.0 / DT) + 5):
         node._frame = tf.TactileFrame(ROSPY._clock["t"], {"ix_n": 100.0, "ix_p": 5.0})
         node._frame_at = ROSPY._clock["t"]
         node._tick()
@@ -163,16 +159,19 @@ class DetectionOnlyIsTheDefault(unittest.TestCase):
                         "the detector should still have confirmed the pull")
         self.assertEqual(PROXIES_BUILT, [], "no service client may be constructed")
 
-    def test_the_detector_still_publishes_candidate_and_confirmed(self):
+    def test_the_detector_publishes_confirmed_and_no_candidate_stage(self):
+        """The consecutive-frame rule decides on one frame, so there is no
+        debounce window and therefore no "candidate|" progress event. The
+        "confirmed|" prefix is unchanged: it is the published interface."""
         node = build()
         events = drive_to_trigger(node)
-        self.assertTrue(any(e.startswith("candidate|") for e in events))
         self.assertTrue(any(e.startswith("confirmed|") for e in events))
+        self.assertFalse(any(e.startswith("candidate|") for e in events))
 
     def test_a_fault_is_published_and_builds_no_client(self):
         node = build()
         node.handle_arm(ARM_REQ)
-        for _ in range(node.config.baseline_frames + 2):
+        for _ in range(3):
             node._frame = tf.TactileFrame(ROSPY._clock["t"], {"ix_n": 100.0, "ix_p": 5.0})
             node._frame_at = ROSPY._clock["t"]
             node._tick()
@@ -245,12 +244,19 @@ class UncalibratedStaysNotReady(unittest.TestCase):
         self.assertFalse(response.success)
         self.assertIn("NOT_READY", response.message)
 
-    def test_missing_thresholds_alone_keep_it_not_ready(self):
-        node = build(**{"~calibration": {"enabled_channels": ["ix_n"]}})
+    def test_an_unconfirmed_schema_alone_keeps_it_not_ready(self):
+        """The threshold now has a requested default, so the SCHEMA is the gate.
+
+        With the adapter disabled no channel is declared, so there is nothing
+        for the 3 N threshold to apply to and the node stays NOT_READY even
+        though every detection parameter has a value.
+        """
+        node = build(**{"~calibration": {"enabled_channels": []},
+                        "~tactile": {"enabled": False, "topic": "", "message_type": "",
+                                     "channels": []}})
         self.assertFalse(node.ready)
         blockers = "; ".join(node.blockers())
-        self.assertIn("release_threshold", blockers)
-        self.assertIn("debounce_sec", blockers)
+        self.assertIn("no force channels declared", blockers)
 
     def test_an_invalid_side_is_fatal(self):
         with self.assertRaises(ValueError):

@@ -117,18 +117,14 @@ class AutoReleaseMonitorNode:
         self.config = TactileDetectorConfig(
             channels=self.adapter.specs(),
             enabled_channels=tuple(calib.get("enabled_channels", []) or []),
+            # Both fall back to the detector's own defaults per channel: the
+            # requested 3 N threshold and the magnitude ("either") comparison.
             release_threshold=_channel_table(calib.get("release_threshold")),
-            stable_tolerance=_channel_table(calib.get("stable_tolerance")),
             direction={str(k): str(v) for k, v in (calib.get("direction") or {}).items() if v},
-            debounce_sec=_optional_number(calib.get("debounce_sec")),
-            baseline_frames=int(_param("baseline_frames", 10)),
-            moving_average_frames=int(_param("moving_average_frames", 10)),
             post_arm_suppress_sec=float(_param("post_arm_suppress_sec", 1.0)),
             sample_timeout_sec=float(_param("sample_timeout_sec", 0.5)),
             monitor_timeout_sec=float(_param("monitor_timeout_sec", 120.0)),
-            baseline_timeout_sec=float(_param("baseline_timeout_sec", 10.0)),
-            min_channels=int(calib.get("min_channels", 1)),
-            drift_gain=float(calib.get("drift_gain", 0.05)),
+            reference_timeout_sec=float(_param("reference_timeout_sec", 10.0)),
         )
         self.detector = TactileReleaseDetector(self.config, hand=self.side)
 
@@ -266,10 +262,10 @@ class AutoReleaseMonitorNode:
             rospy.logwarn_throttle(2.0, "[auto_release_monitor:%s] %s" % (self.side, event.reason))
             self.event_pub.publish(String(data="fault|%s|%s" % (self.side, event.reason)))
             return
-        if event.candidate:
-            self.event_pub.publish(String(
-                data="candidate|%s|held=%.3f|%s" % (self.side, event.held_sec, event.reason)))
-            return
+        # No "candidate" stage: the consecutive-frame rule decides on one frame,
+        # so there is no debounce window to report progress through. The
+        # "confirmed|" wire prefix is kept unchanged -- it is the published
+        # interface the orchestrator and the tests consume.
         if event.trigger:
             rospy.loginfo("[auto_release_monitor:%s] %s", self.side, event.reason)
             self.event_pub.publish(String(data="confirmed|%s|%s" % (self.side, event.reason)))

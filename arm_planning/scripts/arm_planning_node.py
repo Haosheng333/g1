@@ -42,7 +42,10 @@ import rospy
 from std_msgs.msg import Bool, String
 
 from arm_planning import plan_conversion as pc
+from arm_planning import frame_conversion as fconv
 from arm_planning.srv import (
+    ConvertObservation,
+    ConvertObservationResponse,
     PlanGraspFromPoint,
     PlanGraspFromPointResponse,
     PlanToPose,
@@ -93,6 +96,21 @@ class ArmPlanningNode:
 
         self._project_root = rospy.get_param("~project_root", "") or _package_root()
         self._load()
+
+        # --- frame conversion (boundary 3) -------------------------------------
+        # The TF client lives HERE, not in the orchestrator: converting an
+        # observation into the planner's frame is coordinate work and belongs to
+        # the package that owns the planner's convention.
+        import tf2_ros
+
+        self._tf_buffer = tf2_ros.Buffer(rospy.Duration(
+            float(rospy.get_param("~tf_cache_s", 10.0))))
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer)
+        self._tf_timeout = rospy.Duration(float(rospy.get_param("~tf_timeout_s", 0.5)))
+        self._max_waist_delta = float(rospy.get_param(
+            "~max_waist_delta_rad", fconv.DEFAULT_MAX_WAIST_DELTA_RAD))
+        # No cross-call waist history: the guard is stateless (see
+        # frame_conversion.check_waist_consistency).
 
     # ------------------------------------------------------------------ status
     def _publish_status(self, ready: bool, text: str) -> None:
@@ -273,11 +291,107 @@ class ArmPlanningNode:
         return response
 
 
+    # ------------------------------------------------------- frame conversion
+    def handle_convert_observation(self, req) -> ConvertObservationResponse:
+        """One observed point -> the planner's torso_link. See ConvertObservation.srv.
+
+        Deliberately NOT gated on self.ready: the planner's checkpoints and
+        meshes are irrelevant to a coordinate transform, and a caller that
+        cannot convert cannot even report a target in the planner's frame.
+        """
+        source = (req.source_frame or fconv.DEFAULT_SOURCE_FRAME).strip()
+        try:
+            point = [float(v) for v in req.point]
+        except (TypeError, ValueError):
+            return ConvertObservationResponse(
+                success=False, message="point is not a list of numbers")
+        if len(point) != 3:
+            return ConvertObservationResponse(
+                success=False,
+                message="point must be exactly 3 values [x, y, z] in metres, got %d"
+                % len(point))
+
+        stamp = req.stamp if req.stamp and req.stamp.to_sec() > 0.0 else rospy.Time(0)
+        want_exact = bool(req.stamp_is_observation_time) and stamp != rospy.Time(0)
+
+        try:
+            if want_exact:
+                tfm = self._tf_buffer.lookup_transform(
+                    fconv.PLANNER_FRAME, source, stamp, self._tf_timeout)
+                used_latest = False
+            else:
+                tfm = self._tf_buffer.lookup_transform(
+                    fconv.PLANNER_FRAME, source, rospy.Time(0), self._tf_timeout)
+                used_latest = True
+        except Exception as exc:  # noqa: BLE001 - every tf2 error is a refusal
+            return ConvertObservationResponse(
+                success=False, used_latest_transform=False,
+                message="NOT_READY: no %s <- %s transform (%s: %s). The chain needs "
+                        "slam's camera_init -> pelvis, which requires /joint_states to "
+                        "carry waist_yaw_joint, and system_bringup's pelvis -> base_link."
+                        % (fconv.PLANNER_FRAME, source, type(exc).__name__, exc))
+
+        rot = tfm.transform.rotation
+        quat = (rot.x, rot.y, rot.z, rot.w)
+        trans = tfm.transform.translation
+        # The lookup is torso_link <- base_link, i.e. the INVERSE of the waist
+        # rotation, so its yaw is -theta. Report the robot's waist angle.
+        waist = -fconv.yaw_from_quaternion(*quat)
+        tf_stamp_s = tfm.header.stamp.to_sec()
+        obs_stamp_s = stamp.to_sec() if stamp != rospy.Time(0) else tf_stamp_s
+
+        # Stateless waist guard: compare the waist in the transform at the
+        # observation's own stamp against the waist in the latest transform.
+        # Both come from this one request's TF history, so the verdict never
+        # depends on what a previous caller asked for.
+        waist_at_stamp = waist
+        if not req.stamp_is_observation_time and stamp != rospy.Time(0):
+            try:
+                at_stamp = self._tf_buffer.lookup_transform(
+                    fconv.PLANNER_FRAME, source, stamp, self._tf_timeout)
+                r2 = at_stamp.transform.rotation
+                waist_at_stamp = -fconv.yaw_from_quaternion(r2.x, r2.y, r2.z, r2.w)
+            except Exception:  # noqa: BLE001 - no transform at that time
+                waist_at_stamp = None
+
+        reason = fconv.check_waist_consistency(
+            waist_at_stamp, waist,
+            max_delta_rad=req.max_waist_delta_rad or self._max_waist_delta,
+            stamp_is_observation_time=bool(req.stamp_is_observation_time))
+        if reason:
+            return ConvertObservationResponse(
+                success=False, waist_yaw_rad=waist, used_latest_transform=used_latest,
+                message="NOT_READY: " + reason)
+
+        try:
+            planner_point, in_tf_torso = fconv.convert(
+                point, (trans.x, trans.y, trans.z), quat, source)
+        except fconv.ConversionError as exc:
+            return ConvertObservationResponse(success=False, message=str(exc))
+
+        return ConvertObservationResponse(
+            success=True,
+            message=("converted %s -> %s: TF torso %s, planner %s (waist %.4f rad, "
+                     "convention offset %s applied)"
+                     % (source, fconv.PLANNER_FRAME,
+                        [round(v, 6) for v in in_tf_torso],
+                        [round(v, 6) for v in planner_point], waist,
+                        list(fconv.CONVENTION_OFFSET))),
+            planner_point=planner_point, planner_frame=fconv.PLANNER_FRAME,
+            waist_yaw_rad=waist,
+            transform_age_s=max(0.0, obs_stamp_s - tf_stamp_s),
+            convention_offset=list(fconv.CONVENTION_OFFSET),
+            used_latest_transform=used_latest)
+
+
 def main() -> None:
     rospy.init_node("arm_planning_node")
     node = ArmPlanningNode()
     rospy.Service("/arm/plan_to_pose", PlanToPose, node.handle_plan_to_pose)
     rospy.Service("/arm/plan_grasp_from_point", PlanGraspFromPoint, node.handle_plan_grasp_from_point)
+    # Coordinate conversion. Available even when planning is NOT_READY.
+    rospy.Service("/arm/convert_observation", ConvertObservation,
+                  node.handle_convert_observation)
     if node.ready:
         rospy.loginfo("[arm_planning] planning services up (planning only, no execution)")
     else:

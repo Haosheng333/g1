@@ -28,6 +28,7 @@ SAFETY MODEL
 """
 from __future__ import annotations
 
+import math
 import threading
 
 import rospy
@@ -138,6 +139,18 @@ class RosBackend(seq.Backend):
         rospy.Subscriber("/navigation/status", String, self._on_nav_status, queue_size=10)
         self._nav_cancel_pub = rospy.Publisher("/navigation/cancel", Empty, queue_size=1)
 
+        # Measured arm joints, needed as `current_joints` by both planner
+        # services. Captured here rather than in RosProbe, which only tracks
+        # freshness. /joint_states is an EXTERNAL topic owned by robot-control:
+        # if it does not carry the five arm joints, every planning step reports
+        # NOT_READY with that exact reason instead of guessing a posture.
+        self._joint_positions = {}
+        self._joint_lock = threading.Lock()
+        rospy.Subscriber("/joint_states", JointState, self._on_arm_joint_states,
+                         queue_size=5)
+
+        from arm_control.srv import MoveArmJoints
+        from arm_planning.srv import ConvertObservation, PlanGraspFromPoint, PlanToPose
         from g1_navigation.srv import NavigateToObject
         from handover.srv import ArmMonitor
         from perception.srv import GetObjectPosition
@@ -151,6 +164,71 @@ class RosBackend(seq.Backend):
         }
         self._arm_monitor = rospy.ServiceProxy("/auto_release_monitor/arm", ArmMonitor)
         self._disarm_monitor = rospy.ServiceProxy("/auto_release_monitor/disarm", Trigger)
+        # Real downstream planner and executor. Both are implemented production
+        # nodes (arm_planning/scripts/arm_planning_node.py,
+        # arm_control/scripts/arm_control_node.py); they were simply never wired.
+        self._plan_to_pose = rospy.ServiceProxy("/arm/plan_to_pose", PlanToPose)
+        self._plan_grasp_from_point = rospy.ServiceProxy(
+            "/arm/plan_grasp_from_point", PlanGraspFromPoint)
+        self._move_arm_joints = rospy.ServiceProxy("/arm/move_arm_joints", MoveArmJoints)
+        # Boundary 3. The TF maths lives in arm_planning; this is a pass-through.
+        self._convert_observation = rospy.ServiceProxy(
+            "/arm/convert_observation", ConvertObservation)
+        #: name -> [x, y, z, rx, rz] in torso_link, from ~poses. Ships EMPTY.
+        self.poses = dict(rospy.get_param("~poses", {}) or {})
+
+    # --- measured joints ---------------------------------------------------------
+    def _on_arm_joint_states(self, msg):
+        with self._joint_lock:
+            for name, position in zip(msg.name, msg.position):
+                self._joint_positions[name] = float(position)
+
+    def _current_joints(self, arm: str):
+        """(joints, reason). `joints` is 5 finite radians in the planner's order.
+
+        Never substitutes a default posture: planning from a guessed start
+        configuration would return a path that does not begin where the arm is.
+        """
+        try:
+            from arm_planning.plan_conversion import expected_joint_names
+            names = expected_joint_names(arm)
+        except Exception as exc:  # noqa: BLE001 - a missing helper is a blocker
+            return None, "cannot resolve the %s arm joint names: %s" % (arm, exc)
+        with self._joint_lock:
+            have = dict(self._joint_positions)
+        missing = [n for n in names if n not in have]
+        if missing:
+            return None, (
+                "NOT_READY: /joint_states carries no %s, so the planner has no "
+                "current_joints. That topic is owned by robot-control / integration; "
+                "this package will not substitute a guessed posture." % ", ".join(missing))
+        joints = [have[n] for n in names]
+        if not all(math.isfinite(v) for v in joints):
+            return None, "/joint_states reported a non-finite value for %s: %s" % (arm, joints)
+        return joints, ""
+
+    # --- configured poses --------------------------------------------------------
+    def _configured_pose(self, name: str):
+        """(pose, reason). A 5-vector [x,y,z,rx,rz] in torso_link, or None.
+
+        Reads ~poses/<name>. The shipped config is EMPTY on purpose, so every
+        pose-dependent step stays NOT_READY until arm_planning publishes a
+        validated pose. Nothing here invents one.
+        """
+        raw = self.poses.get(name)
+        if raw in (None, "", [], {}):
+            return None, _MISSING_POSE % (name, "%s pose" % name)
+        try:
+            pose = [float(v) for v in raw]
+        except (TypeError, ValueError):
+            return None, "~poses/%s is not a list of numbers: %r" % (name, raw)
+        if len(pose) != 5:
+            return None, (
+                "~poses/%s must be exactly 5 values [x, y, z, rx, rz] in torso_link "
+                "(metres, radians), got %d" % (name, len(pose)))
+        if not all(math.isfinite(v) for v in pose):
+            return None, "~poses/%s contains a non-finite value: %r" % (name, pose)
+        return pose, ""
 
     def _on_nav_status(self, msg):
         with self._nav_status_lock:
@@ -258,32 +336,50 @@ class RosBackend(seq.Backend):
             "falling. Retraction is refused and a human must inspect."
             % (ctx.release_outcome or "unknown",))
 
-    # --- steps blocked on configuration that does not exist --------------------
+    # --- pose-dependent steps ----------------------------------------------------
+    #
+    # The plan+execute WIRING is implemented below and calls the real
+    # /arm/plan_to_pose and /arm/move_arm_joints. What is still missing is the
+    # POSE ITSELF: ~poses ships empty, so _configured_pose returns NOT_READY and
+    # these steps refuse exactly as before. Supplying a number here would not
+    # resolve the capability either -- arm_planning owns validating that a pose
+    # is reachable, inside the trained workspace and collision-free, and the
+    # handover_pose / stow_pose / home_pose capabilities stay `unresolved` so
+    # preflight refuses the route regardless of this config.
+
     def plan_handover_pose(self, ctx):
-        return seq.StepResult(False, _MISSING_POSE % ("handover", "handover_pose"))
+        return self._plan_pose(ctx, "handover", "handover_pose")
 
     def execute_retract_home(self, ctx):
+        """Retract to home. Refused unless the release outcome permits motion."""
         allowed, reason = ctx.handover.retraction_allowed()
         if not allowed:
             return seq.StepResult(False, reason)
-        moved = self._move_to_home(ctx)
+        planned = self._plan_pose(ctx, "home", "home_pose")
+        if not planned.ok:
+            return planned
+        moved = self._execute_path(ctx, "home_pose")
         if not moved.ok:
             return moved
         # End of delivery: close the task record only after the arm is home.
         ctx.handover.mark_done()
         return moved
 
-    def _move_to_home(self, ctx):
-        """Plan and execute the move to the home pose.
+    def plan_stow(self, ctx):
+        """Spec 2.4: plan the stow/carry recovery path BEFORE the grasp moves.
 
-        Blocked: no home pose exists anywhere in the repository. When
-        arm_planning publishes one this becomes plan_to_pose + move_arm_joints,
-        and the mark_done() above closes the delivery.
+        Planned from the end of retract (`plan_grasp`'s own final_joints), so it
+        is validated while the arm is still parked and the hand still open --
+        never discovered to be unplannable after the hand has closed on the
+        object.
         """
-        return seq.StepResult(False, _MISSING_POSE % ("home", "home_pose"))
-
-    def execute_stow(self, ctx):
-        return seq.StepResult(False, _MISSING_POSE % ("stow/carry", "stow_pose"))
+        if not ctx.grasp_final_joints:
+            return seq.StepResult(
+                False,
+                "cannot plan the stow path: plan_grasp did not report final_joints, so "
+                "the posture the stow would start from is unknown. Spec 2.4 requires "
+                "this path to be validated before the grasp starts moving.")
+        return self._plan_pose(ctx, "stow", "stow", start_joints=ctx.grasp_final_joints)
 
     def disarm_monitor_cleanup(self):
         try:
@@ -315,12 +411,31 @@ class RosBackend(seq.Backend):
         )
 
     def navigate(self, ctx):
+        """Drive to the PICKUP waypoint (ctx.target)."""
+        return self._drive_to(ctx.target, "pickup")
+
+    def navigate_to_destination(self, ctx):
+        """Drive to the DELIVERY waypoint (ctx.destination).
+
+        A separate action so the delivery leg cannot silently reuse the pickup
+        waypoint, which is what happened while RunRoute carried only `target`.
+        """
+        if not ctx.destination:
+            return seq.StepResult(
+                False,
+                "no delivery destination: RunRoute.destination is empty. The full task "
+                "navigates twice and this leg has no waypoint; refusing rather than "
+                "re-driving to the pickup waypoint %r." % (ctx.target,))
+        return self._drive_to(ctx.destination, "delivery")
+
+    def _drive_to(self, waypoint, leg):
         """Call /navigation/navigate, then apply navigation's saw_active guard."""
         guard = ng.NavGuard(self.timeouts.get("navigate", 1800.0))
         guard.start(rospy.Time.now().to_sec())
-        response = self._navigate(class_name=ctx.target, approach_distance=0.0)
+        response = self._navigate(class_name=waypoint, approach_distance=0.0)
         if not response.success:
-            return seq.StepResult(False, "navigate(%r) rejected: %s" % (ctx.target, response.message))
+            return seq.StepResult(False, "navigate(%s=%r) rejected: %s"
+                                  % (leg, waypoint, response.message))
 
         rate = rospy.Rate(10)
         while not rospy.is_shutdown():
@@ -331,8 +446,9 @@ class RosBackend(seq.Backend):
                 break
             rate.sleep()
         return seq.StepResult(
-            verdict == ng.SUCCESS, "navigation %s: %s" % (verdict, guard.reason), motion_issued=True
-        )
+            verdict == ng.SUCCESS,
+            "navigation to the %s waypoint %r %s: %s" % (leg, waypoint, verdict, guard.reason),
+            motion_issued=True)
 
     def detect_object(self, ctx):
         response = self._detect(label=ctx.target, index=0)
@@ -343,6 +459,10 @@ class RosBackend(seq.Backend):
         ctx.detection = {
             "x": response.x, "y": response.y, "z": response.z,
             "frame_id": response.frame_id, "label": ctx.target,
+            # RECEIPT time, not observation time: GetObjectPosition.srv carries
+            # no stamp. Recorded so to_planner_frame can pass an honest upper
+            # bound and let arm_planning apply its waist-motion guard.
+            "received_at": rospy.Time.now(),
         }
         return seq.StepResult(True, "detected %s at (%.3f, %.3f, %.3f) in %s" % (
             ctx.target, response.x, response.y, response.z, response.frame_id))
@@ -352,18 +472,220 @@ class RosBackend(seq.Backend):
         return seq.StepResult(True, "reported: %s" % (ctx.detection,))
 
     def to_planner_frame(self, ctx):
-        # Unreachable: FRAME_CONTRACT is an unresolved capability, so preflight
-        # refuses the route before any step runs. Kept explicit so the reason
-        # travels with the step rather than living only in a comment.
+        """Hand the observation to arm_planning's /arm/convert_observation.
+
+        This package performs NO TF mathematics: it passes the point, the frame
+        perception labelled it with, and the best timestamp it has, and stores
+        whatever comes back. The 10 mm torso_link convention correction and the
+        TF lookup both happen in arm_planning, which owns the planner's frame.
+
+        TIMESTAMP LIMITATION, passed on rather than hidden:
+        perception/GetObjectPosition.srv has NO stamp field, so the orchestrator
+        cannot know when the observation was taken. It sends its own RECEIPT
+        time with stamp_is_observation_time=false, which makes the conversion
+        apply a waist-motion guard and refuse instead of pairing an old
+        observation with a newer waist pose.
+        """
+        if not ctx.detection:
+            return seq.StepResult(
+                False, "no detection to convert: detect_object did not run or failed")
+        point = [ctx.detection.get("x"), ctx.detection.get("y"), ctx.detection.get("z")]
+        if not all(isinstance(v, (int, float)) and math.isfinite(v) for v in point):
+            return seq.StepResult(
+                False, "perception returned a non-finite position %s; refusing to route "
+                       "it to the planner" % (point,))
+        source = ctx.detection.get("frame_id") or ""
+        if not source:
+            return seq.StepResult(
+                False, "perception reported no frame_id, so the observation cannot be "
+                       "converted")
+        try:
+            response = self._convert_observation(
+                source_frame=source, point=point,
+                # Receipt time, NOT observation time -- see the docstring.
+                stamp=ctx.detection.get("received_at") or rospy.Time.now(),
+                stamp_is_observation_time=False,
+                max_waist_delta_rad=float(self.timeouts.get("max_waist_delta_rad", 0.0)))
+        except Exception as exc:  # noqa: BLE001
+            return seq.StepResult(False, "/arm/convert_observation raised %s: %s"
+                                  % (type(exc).__name__, exc))
+        if not response.success:
+            return seq.StepResult(False, "convert_observation: %s" % response.message)
+        try:
+            converted = [float(v) for v in response.planner_point]
+        except (TypeError, ValueError):
+            return seq.StepResult(False, "convert_observation returned a non-numeric point")
+        if len(converted) != 3 or not all(math.isfinite(v) for v in converted):
+            return seq.StepResult(
+                False, "convert_observation returned an unusable point: %s" % (converted,))
+        ctx.planner_target = converted
+        ctx.planner_frame = response.planner_frame
         return seq.StepResult(
-            False, "NOT_READY: " + caps.capability(caps.FRAME_CONTRACT).unresolved
-        )
+            True,
+            "converted %s %s -> %s %s (waist %.4f rad, convention offset %s, "
+            "latest_transform=%s)"
+            % (source, [round(v, 4) for v in point], response.planner_frame,
+               [round(v, 4) for v in converted], response.waist_yaw_rad,
+               list(response.convention_offset), response.used_latest_transform))
+
+    # --- planning and execution: REAL calls to arm_planning / arm_control -------
+    #
+    # Both downstream services are implemented production nodes that were never
+    # wired up. These adapters call them and carry their outputs verbatim: the
+    # flattened N x 5 path, the planner's own joint_names, the arm side and the
+    # failure message. Nothing here re-plans, rounds, re-orders or substitutes a
+    # successful result.
+
+    def _store_segment(self, ctx, segment, flat, count, joint_names, arm):
+        ctx.plan[segment] = {
+            "flat": list(flat), "count": int(count),
+            "joint_names": list(joint_names), "arm": arm,
+        }
+
+    def _check_joint_names(self, arm, joint_names):
+        """The planner's joint order must be the one we think it is."""
+        try:
+            from arm_planning.plan_conversion import expected_joint_names
+            expected = expected_joint_names(arm)
+        except Exception as exc:  # noqa: BLE001
+            return "cannot verify joint order: %s" % (exc,)
+        if list(joint_names) != list(expected):
+            return (
+                "planner returned joint order %s but this arm's order is %s; refusing "
+                "to execute a path whose column meaning is unclear"
+                % (list(joint_names), expected))
+        return ""
 
     def plan_grasp(self, ctx):
-        return seq.StepResult(False, "unreachable: route blocked before planning")
+        """Call /arm/plan_grasp_from_point and keep all four segments."""
+        if not ctx.planner_target:
+            return seq.StepResult(
+                False,
+                "NOT_READY: no planner-frame target. to_planner_frame must convert the "
+                "detection into torso_link first, and that conversion is unimplemented "
+                "(frame_contract). plan_grasp will not plan from a perception frame the "
+                "planner does not accept.")
+        joints, reason = self._current_joints(self.side)
+        if joints is None:
+            return seq.StepResult(False, reason)
+        try:
+            response = self._plan_grasp_from_point(
+                arm=self.side, current_joints=joints, object_xyz=list(ctx.planner_target))
+        except Exception as exc:  # noqa: BLE001
+            return seq.StepResult(False, "/arm/plan_grasp_from_point raised %s: %s"
+                                  % (type(exc).__name__, exc))
+        if not response.success:
+            # The planner's own reason, verbatim: it names which segment failed.
+            return seq.StepResult(False, "plan_grasp_from_point: %s" % response.message)
+
+        bad = self._check_joint_names(self.side, response.joint_names)
+        if bad:
+            return seq.StepResult(False, bad)
+
+        names = list(response.segment_names)
+        counts = [int(c) for c in response.segment_waypoint_counts]
+        flat = list(response.flattened_segment_paths)
+        if len(names) != len(counts):
+            return seq.StepResult(False, "planner returned %d segment names but %d counts"
+                                  % (len(names), len(counts)))
+        if sum(counts) * 5 != len(flat):
+            return seq.StepResult(
+                False, "planner path length %d does not match %d waypoints x 5 joints"
+                % (len(flat), sum(counts)))
+        offset = 0
+        for name, count in zip(names, counts):
+            if count <= 0:
+                return seq.StepResult(False, "planner segment %r has %d waypoints"
+                                      % (name, count))
+            block = flat[offset:offset + count * 5]
+            if not all(math.isfinite(v) for v in block):
+                return seq.StepResult(False, "planner segment %r contains a non-finite "
+                                      "joint value" % (name,))
+            self._store_segment(ctx, name, block, count, response.joint_names, self.side)
+            offset += count * 5
+        # Needed by plan_stow: the stow path starts where retract ends, and must
+        # be planned BEFORE the grasp moves (spec 2.4), so it cannot use the
+        # live joints.
+        ctx.grasp_final_joints = [float(v) for v in response.final_joints]
+        return seq.StepResult(True, "planned %d segments for the %s arm (%s), %d waypoints"
+                              % (len(names), self.side, ", ".join(names), sum(counts)))
+
+    def _execute_path(self, ctx, segment):
+        """Send one stored segment to /arm/move_arm_joints, unmodified."""
+        stored = ctx.plan.get(segment)
+        if not stored:
+            return seq.StepResult(
+                False,
+                "no planned path for segment %r: its planning step did not run or did "
+                "not succeed. Refusing to move without the plan it was supposed to "
+                "execute." % (segment,))
+        if stored["arm"] != self.side:
+            return seq.StepResult(False, "segment %r was planned for the %s arm but this "
+                                  "run is %s" % (segment, stored["arm"], self.side))
+        bad = self._check_joint_names(self.side, stored["joint_names"])
+        if bad:
+            return seq.StepResult(False, bad)
+        try:
+            response = self._move_arm_joints(
+                arm=stored["arm"], path_flat=stored["flat"],
+                timeout_per_waypoint=float(self.timeouts.get("waypoint_sec", 0.0)))
+        except Exception as exc:  # noqa: BLE001
+            # motion_issued: the command left this process; the arm's state is
+            # now unknown, so the route must not be retried blindly.
+            return seq.StepResult(False, "/arm/move_arm_joints raised %s: %s"
+                                  % (type(exc).__name__, exc), motion_issued=True)
+        detail = "%s: %s" % (segment, response.message)
+        return seq.StepResult(bool(response.success), detail, motion_issued=True)
 
     def execute_segment(self, ctx, step):
-        return seq.StepResult(False, "unreachable: route blocked before arm motion")
+        """Execute the segment this step names. `execute_<segment>`."""
+        segment = step.name[len("execute_"):] if step.name.startswith("execute_") else step.name
+        return self._execute_path(ctx, segment)
+
+    def _plan_pose(self, ctx, pose_name, segment, start_joints=None):
+        """Plan to a CONFIGURED pose via /arm/plan_to_pose. NOT_READY if unset.
+
+        `start_joints` overrides the live measurement, which is what spec 2.4
+        needs: a recovery path planned before the grasp moves must start from
+        where the grasp will END, not from where the arm is now.
+        """
+        pose, reason = self._configured_pose(pose_name)
+        if pose is None:
+            return seq.StepResult(False, reason)
+        if start_joints is not None:
+            if len(start_joints) != 5 or not all(math.isfinite(v) for v in start_joints):
+                return seq.StepResult(
+                    False, "cannot plan %s from %r: need 5 finite joint values"
+                    % (pose_name, start_joints))
+            joints, reason = list(start_joints), ""
+        else:
+            joints, reason = self._current_joints(self.side)
+        if joints is None:
+            return seq.StepResult(False, reason)
+        try:
+            response = self._plan_to_pose(
+                arm=self.side, current_joints=joints, target_pose=pose)
+        except Exception as exc:  # noqa: BLE001
+            return seq.StepResult(False, "/arm/plan_to_pose raised %s: %s"
+                                  % (type(exc).__name__, exc))
+        if not response.success:
+            return seq.StepResult(False, "plan_to_pose(%s): %s" % (pose_name, response.message))
+        bad = self._check_joint_names(self.side, response.joint_names)
+        if bad:
+            return seq.StepResult(False, bad)
+        count = int(response.waypoint_count)
+        flat = list(response.flattened_joint_path)
+        if count <= 0 or len(flat) != count * 5:
+            return seq.StepResult(
+                False, "plan_to_pose(%s) returned %d waypoints and %d values; a malformed "
+                "path is never a recoverable command" % (pose_name, count, len(flat)))
+        if not all(math.isfinite(v) for v in flat):
+            return seq.StepResult(False, "plan_to_pose(%s) returned a non-finite joint value"
+                                  % (pose_name,))
+        self._store_segment(ctx, segment, flat, count, response.joint_names, self.side)
+        return seq.StepResult(
+            True, "planned %s pose for the %s arm: %d waypoints, position_error_m=%s"
+            % (pose_name, self.side, count, response.position_error_m))
 
     def open_gripper(self, ctx):
         return self._hand_call("pre_grasp")
@@ -489,6 +811,11 @@ class OrchestratorNode:
             transfer_verified=False,
         )
 
+    @staticmethod
+    def _destination(req) -> str:
+        """The delivery waypoint, or "" when the request carries none."""
+        return (getattr(req, "destination", "") or "").strip()
+
     def run(self, route_name: str, req) -> RunRouteResponse:
         route = routes_mod.resolve_route(route_name)
 
@@ -504,6 +831,16 @@ class OrchestratorNode:
         # ask for a dry run. Nothing can force motion on from a request.
         dry_run = bool(req.dry_run) or not self.enable_motion
 
+        # A route with a delivery leg needs its own waypoint. Refused up front,
+        # before the lock, so the task cannot drive to the pickup point twice.
+        destination = self._destination(req)
+        if route_name in routes_mod.ROUTES_NEEDING_DESTINATION and not destination:
+            return RunRouteResponse(
+                success=False, dry_run=dry_run,
+                message="route %r needs both `target` (pickup waypoint / object label) "
+                        "and `destination` (delivery waypoint); destination is empty"
+                        % route_name)
+
         try:
             held = self.lock.hold("%s (dry_run=%s)" % (route_name, dry_run))
         except Busy as exc:
@@ -515,6 +852,7 @@ class OrchestratorNode:
             return self._execute(route, req, dry_run)
 
     def _execute(self, route, req, dry_run: bool) -> RunRouteResponse:
+        destination = self._destination(req)
         self.status_pub.publish(
             String(data="%s: preflight (%s)" % (route.name, "dry-run" if dry_run else "MOTION"))
         )
@@ -529,7 +867,8 @@ class OrchestratorNode:
             # when hardware is absent, but report the blockers that a real run
             # would have refused on.
             backend = seq.DryRunBackend()
-            ctx = seq.RouteContext(route=route.name, target=req.target, side=self.side,
+            ctx = seq.RouteContext(route=route.name, target=req.target,
+                                   destination=destination, side=self.side,
                                    dry_run=True, handover=self.handover)
             run = seq.run_route(route, backend, ctx, req.start_step, self.retry, blockers=[])
             message = "DRY RUN: %s" % run.message
@@ -566,7 +905,8 @@ class OrchestratorNode:
                 blockers=["backend: %s" % exc], motion_issued=False, dry_run=False,
             )
 
-        ctx = seq.RouteContext(route=route.name, target=req.target, side=self.side,
+        ctx = seq.RouteContext(route=route.name, target=req.target,
+                               destination=destination, side=self.side,
                                dry_run=False, handover=self.handover)
         self.status_pub.publish(String(data="%s: RUNNING" % route.name))
         run = seq.run_route(route, backend, ctx, req.start_step, self.retry, blockers=[])
@@ -591,6 +931,10 @@ def main() -> None:
         ("navigate_report", "/orchestrator/run_navigate_report"),
         ("grasp", "/orchestrator/run_grasp"),
         ("deliver", "/orchestrator/run_deliver"),
+        # The single full-task entry point (spec 0.4 / 6.2): grasp then deliver,
+        # composed in-process under ONE execution lock. It never calls
+        # run_grasp or run_deliver, which would deadlock against its own lock.
+        ("deliver_task", "/orchestrator/run_deliver_task"),
     ):
         rospy.Service(service, RunRoute, node.make_handler(route_name))
 

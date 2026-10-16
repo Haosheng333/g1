@@ -142,8 +142,7 @@ MONITOR_PARAMS = {
     },
     "~calibration": {
         "enabled_channels": ["ix_n"], "release_threshold": {"ix_n": 10.0},
-        "stable_tolerance": {"ix_n": 1.0}, "direction": {"ix_n": "drop"},
-        "debounce_sec": 0.2, "min_channels": 1, "drift_gain": 0.05,
+        "direction": {"ix_n": "drop"},
     },
 }
 
@@ -209,8 +208,13 @@ class Rig(object):
             CLOCK["t"] += DT
 
     def pull(self):
-        """Baseline, clear suppression, then a real pull through the detector."""
-        self.feed(self.monitor.config.baseline_frames + int(1.0 / DT) + 5, 100.0)
+        """Take a reference, clear suppression, then a real pull.
+
+        One steady frame establishes the reference under the consecutive-frame
+        rule; the rest of the steady run clears the post-arm suppression window.
+        The step to 0.0 is a -100 delta, far past the 10.0 test threshold.
+        """
+        self.feed(int(1.0 / DT) + 5, 100.0)
         self.feed(20, 0.0)
 
 
@@ -473,7 +477,7 @@ class TimeoutAndRefusals(unittest.TestCase):
         node = monitor_mod.AutoReleaseMonitorNode()
         BUS["/auto_release_monitor/arm"] = node.handle_arm
         node.handle_arm(types.SimpleNamespace(side="right", session_token="tok123456789"))
-        for _ in range(node.config.baseline_frames + int(1.0 / DT) + 25):
+        for _ in range(int(1.0 / DT) + 25):
             node._frame = tf.TactileFrame(CLOCK["t"], {"ix_n": 100.0})
             node._frame_at = CLOCK["t"]
             node._tick()

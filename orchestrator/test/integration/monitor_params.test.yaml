@@ -1,0 +1,37 @@
+# TEST-ONLY monitor parameters. NOT loaded by handover/launch/auto_release_monitor.launch
+# and not referenced by any production launch path; run_integration.sh uploads it
+# into the test master's parameter server only.
+#
+# This declares a force schema so the real detector can be ARMED in the test.
+# It is NOT a claim about the BrainCo Revo2's actual SDK schema, which is still
+# unconfirmed -- the message type here is std_msgs/Float32MultiArray published
+# by doubles_node.py, chosen because it is a REAL generated message type.
+#
+# The three channels are deliberately force_like so the requested
+# consecutive-frame rule applies to all of them, and release_threshold is left
+# EMPTY so the production default (3.0) is what the test exercises.
+side: right
+release_integration: true
+rate: 30.0
+
+tactile:
+  enabled: true
+  topic: "/test/force"
+  message_type: "std_msgs/Float32MultiArray"
+  stamp_field: ""
+  valid_field: ""
+  expected_rate_hz: 30.0
+  channels:
+    - {name: ch0, finger: index,  kind: force_like, field: "data[0]", unit: "N (TEST FIXTURE)"}
+    - {name: ch1, finger: middle, kind: force_like, field: "data[1]", unit: "N (TEST FIXTURE)"}
+    - {name: ch2, finger: thumb,  kind: force_like, field: "data[2]", unit: "N (TEST FIXTURE)"}
+
+calibration:
+  enabled_channels: []
+  release_threshold: {}     # empty => the production default, 3.0
+  direction: {}             # empty => the production default, "either"
+
+post_arm_suppress_sec: 1.0
+sample_timeout_sec: 0.5
+reference_timeout_sec: 10.0
+monitor_timeout_sec: 120.0

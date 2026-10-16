@@ -40,7 +40,21 @@ class RouteContext:
     dry_run: bool = True
     #: Filled by detect_object; consumed (in principle) by to_planner_frame.
     detection: dict = field(default_factory=dict)
-    #: Filled by plan_grasp: segment name -> flat path + count.
+    #: Filled by to_planner_frame: the detection converted to torso_link, as
+    #: [x, y, z] in metres. Consumed by plan_grasp. Empty while boundary 3 is
+    #: unimplemented, which is why plan_grasp is unreachable today.
+    planner_target: list = field(default_factory=list)
+    #: Frame the converted target is in, as arm_planning reported it.
+    planner_frame: str = ""
+    #: plan_grasp's `final_joints`: where retract ends. plan_stow starts there,
+    #: so the recovery path is planned before the grasp moves (spec 2.4).
+    grasp_final_joints: list = field(default_factory=list)
+    #: Second destination for the composed full task. `target` is the pickup
+    #: waypoint / object label; this is the delivery point B.
+    destination: str = ""
+    #: Filled by plan_grasp / plan_handover_pose / the pose planners:
+    #: segment name -> {"flat": [...], "count": N, "joint_names": [...]}.
+    #: Consumed verbatim by execute_segment; nothing re-plans at execution time.
     plan: dict = field(default_factory=dict)
     notes: list = field(default_factory=list)
     #: The task record (orchestrator.handover_state.HandoverState). The route
@@ -161,9 +175,6 @@ class Backend(object):
     def execute_retract_home(self, ctx):
         raise NotImplementedError
 
-    def execute_stow(self, ctx):
-        raise NotImplementedError
-
     def await_localization(self, ctx):
         raise NotImplementedError
 
@@ -173,6 +184,9 @@ class Backend(object):
     def navigate(self, ctx):
         raise NotImplementedError
 
+    def navigate_to_destination(self, ctx):
+        raise NotImplementedError
+
     def detect_object(self, ctx):
         raise NotImplementedError
 
@@ -180,6 +194,9 @@ class Backend(object):
         raise NotImplementedError
 
     def to_planner_frame(self, ctx):
+        raise NotImplementedError
+
+    def plan_stow(self, ctx):
         raise NotImplementedError
 
     def plan_grasp(self, ctx):
@@ -243,6 +260,10 @@ class DryRunBackend(Backend):
     def enable_motion(self, ctx):
         return self._record("enable_motion", "dry run: motion gate NOT opened")
 
+    def navigate_to_destination(self, ctx):
+        return self._record("navigate_to_destination",
+                            "dry run: NOT driving to %r" % (ctx.destination,))
+
     def navigate(self, ctx):
         return self._record("navigate", "dry run: would navigate to %r" % ctx.target)
 
@@ -260,6 +281,10 @@ class DryRunBackend(Backend):
         ctx.plan = {name: {"waypoint_count": 0} for name in
                     ("to_pregrasp", "approach", "lift", "retract")}
         return self._record("plan_grasp", "dry run: no plan requested")
+
+    def plan_stow(self, ctx):
+        ctx.plan["stow"] = {"waypoint_count": 0}
+        return self._record("plan_stow", "dry run: no stow path planned")
 
     def execute_segment(self, ctx, step):
         return self._record(step.name, "dry run: %s NOT executed" % step.name)
@@ -299,9 +324,6 @@ class DryRunBackend(Backend):
 
     def execute_retract_home(self, ctx):
         return self._record("execute_retract_home", "dry run: arm NOT moved")
-
-    def execute_stow(self, ctx):
-        return self._record("execute_stow", "dry run: arm NOT moved")
 
     def cancel_navigation(self):
         self.cleanup.append("cancel_navigation")
@@ -354,6 +376,12 @@ def run_route(route, backend: Backend, ctx: RouteContext, start_step: str = "",
     completed = []
     motion_issued = False
     final_step = ""
+    # Detail of the last step that ran. Carried into the success message because
+    # a route's *output* lives there: navigate_report's whole job is to report a
+    # pose, and before this the detail was discarded, so the caller got
+    # "completed (5 steps)" and the detection never crossed the service
+    # boundary. Found by orchestrator/test/integration/test_ros_pipeline.py.
+    last_detail = ""
     try:
         for step in to_run:
             final_step = step.name
@@ -385,9 +413,13 @@ def run_route(route, backend: Backend, ctx: RouteContext, start_step: str = "",
                     dry_run=ctx.dry_run,
                 )
             completed.append(step.name)
+            last_detail = result.detail or ""
+        summary = "route %r completed (%d steps)" % (route.name, len(completed))
+        if last_detail:
+            summary += ": %s" % last_detail
         return RouteResult(
             success=True,
-            message="route %r completed (%d steps)" % (route.name, len(completed)),
+            message=summary,
             steps_completed=completed,
             steps_skipped=skipped,
             final_step=final_step,

@@ -52,6 +52,22 @@ class PlanGraspFromPointResponse(_Response):
     }
 
 
+class ConvertObservationResponse(object):
+    """Mirrors ConvertObservation.srv's response block."""
+
+    def __init__(self, success=False, message="", planner_point=(), planner_frame="",
+                 waist_yaw_rad=0.0, transform_age_s=0.0, convention_offset=(),
+                 used_latest_transform=False):
+        self.success = success
+        self.message = message
+        self.planner_point = list(planner_point)
+        self.planner_frame = planner_frame
+        self.waist_yaw_rad = waist_yaw_rad
+        self.transform_age_s = transform_age_s
+        self.convention_offset = list(convention_offset)
+        self.used_latest_transform = used_latest_transform
+
+
 def _install_stubs():
     rospy = types.ModuleType("rospy")
     rospy.get_param = lambda name, default=None: default
@@ -75,9 +91,19 @@ def _install_stubs():
     srv = types.ModuleType("arm_planning.srv")
     srv.PlanToPose = object
     srv.PlanGraspFromPoint = object
+    srv.ConvertObservation = object
     srv.PlanToPoseResponse = PlanToPoseResponse
     srv.PlanGraspFromPointResponse = PlanGraspFromPointResponse
+    srv.ConvertObservationResponse = ConvertObservationResponse
     sys.modules["arm_planning.srv"] = srv
+
+    # tf2_ros is imported lazily by ArmPlanningNode.__init__ for the frame
+    # conversion. This test exercises the response layer only, but the stub
+    # keeps the module importable without a ROS install.
+    tf2 = types.ModuleType("tf2_ros")
+    tf2.Buffer = lambda *a, **k: None
+    tf2.TransformListener = lambda *a, **k: None
+    sys.modules.setdefault("tf2_ros", tf2)
 
 
 _install_stubs()
@@ -332,12 +358,15 @@ class NodeNeverCommandsTheRobot(unittest.TestCase):
                 forbidden, code, "arm_planning_node.py code must not reference %r" % forbidden
             )
 
-    def test_only_the_two_specified_services_are_advertised(self):
+    def test_only_the_three_specified_services_are_advertised(self):
         code = self._executable_source(
             os.path.join(HERE, "..", "scripts", "arm_planning_node.py")
         )
         advertised = sorted(set(re.findall(r'rospy\.Service\(\s*"([^"]+)"', code)))
-        self.assertEqual(advertised, ["/arm/plan_grasp_from_point", "/arm/plan_to_pose"])
+        # /arm/convert_observation was added for boundary 3: it converts an
+        # observation into the planner's frame and still commands nothing.
+        self.assertEqual(advertised, ["/arm/convert_observation",
+                                      "/arm/plan_grasp_from_point", "/arm/plan_to_pose"])
 
 
 if __name__ == "__main__":

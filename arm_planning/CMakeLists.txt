@@ -13,6 +13,7 @@ add_service_files(
   FILES
   PlanToPose.srv
   PlanGraspFromPoint.srv
+  ConvertObservation.srv
 )
 
 generate_messages(

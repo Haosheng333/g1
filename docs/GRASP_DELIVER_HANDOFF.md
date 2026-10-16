@@ -326,8 +326,8 @@ convention is `arm_kinematics.yaml` built in".
 |---|---|---|---|
 | 1 | Provenance | md5-identical to upstream: `slam/…mode_10.urdf` = `g1_23dof_mode_10.urdf`; `arm_planning/…g1_23dof.urdf` = `g1_23dof.urdf` (md5 `b65b639f2ad0b64d5060ef5cb79e4dd3`). Same commit, **two variants**, neither modified. slam has `SOURCE.md`+`LICENSE`; arm_planning's `README.md` is 1 byte. | **Verified** |
 | 2 | Files actually loaded | `arm_kinematics.yaml`, 2 `.pt`, 2 `.npy`, 11 `.STL`. **No URDF.** | **Verified** |
-| 3 | Frame / units / convention | `torso_link`; `[x,y,z,rx,rz]`; m/rad; "URDF fixed-axis XYZ Euler, rx=roll rz=yaw, pitch omitted"; order `shoulder_pitch, roll, yaw, elbow, wrist_roll`; EE = `left_grasp_frame`, a **YAML-only** frame (`grasp_xyz=[0.215,0.006,0.025]`) absent from both URDFs. Limits + axes match **both** URDFs exactly, all 5 joints. | **Verified** |
-| 4 | Checkpoint metadata | Keys only `arm`, `model_state`, `x_mean`, `x_std`. Embedded `joint_midpoint`/`joint_half_range` match YAML limits to float32 (**5.8e-08 / 1.6e-07**). **No** key names a URDF, commit, frame, units or config version. | **UNVERIFIED** (geometry/pose-frame provenance) |
+| 3 | Frame / units / convention | `torso_link`; `[x,y,z,rx,rz]`; m/rad; "URDF fixed-axis XYZ Euler, rx=roll rz=yaw, pitch omitted"; order `shoulder_pitch, roll, yaw, elbow, wrist_roll`; EE = `left_grasp_frame`, a **YAML-only** frame absent from both URDFs (grep count 0 in each). **`grasp_xyz` corrected 2026-10-14 to `[0.215, 0.06, 0.025]`** — the old `0.006` was short by 10×. Its reference frame is now established from code, not assumed: `forward_kinematics()` applies it after the 5th joint, so it is expressed in `<side>_wrist_roll_rubber_hand`. Limits + axes match **both** URDFs exactly, all 5 joints. | **Verified; offset corrected** |
+| 4 | Checkpoint metadata | **CORRECTED 2026-10-14 — the earlier "no key names a frame or config version" was wrong.** Top-level keys are `arm`, `config`, `epoch`, `model_state`, `optimizer_state`, `weights`, `x_mean`, `x_std`, `best_validation_position_mean_m`. **`config` embeds the whole `arm_kinematics.yaml` as trained**, including `grasp_xyz`, read with no torch by `arm_planning/src/arm_planning/checkpoint_meta.py`. Both shipped checkpoints embed `grasp_xyz = [0.215, ±0.006, 0.025]`, i.e. the **pre-correction** tool point, and record validation errors of 4.378 mm (left) / 4.180 mm (right). | **Pose-frame provenance now VERIFIED — and the checkpoints are STALE: 54.0 mm, 12–13× their own validation error** |
 | 4b | Mask metadata | `arm`, `shape 83×55×76×46`, `joint_order` (4 joints), limits, `resolution_deg 4.0`, `wrist_roll_rad 0.0`, penetration allowance, completion state. Pins joint-space convention; names **no** URDF, mesh set or frame. | joint space **verified**; geometry **UNVERIFIED** |
 | 5 | FK in a common pelvis frame | `pelvis→EE` **bit-identical**, `dxyz = 0.000e+00`, `dR = 0.000e+00`, across zero / bent arm / **waist +0.40** / **waist −0.90** / waist+bent. `pelvis→torso_link` differs by a **constant 1.000e-02 m**, waist-independent. `pelvis→shoulder_pitch` sums identical: `[-0.0000072, 0.10022, 0.29178]`. | **Shifted frame origin, NOT different geometry** |
 | 6 | Can 10 mm be handled by conversion? | Not inferred from the torso origin alone: (a) FK above; (b) arm joints 2–5 byte-identical in both URDFs; (c) YAML shoulder_pitch z = **0.23778** ⇒ derived from `g1_23dof`; (d) `g1_collision_probe.py` hardcodes body meshes at `(0.0039635, 0, −0.054)` = the pelvis origin **in the g1_23dof convention**; (e) in *both* variants `head_joint` origin = inverse of `waist_yaw_joint`, so body links sit at the pelvis origin either way. Whole stack self-consistent; body-relative-to-arm geometry variant-independent. | **Compatible with a verified adapter. No retraining, no mask regeneration.** |
@@ -368,11 +368,31 @@ clear — it alone flips `/arm/planner/ready` to true.**
 `arm_planning/test/test_asset_resolution.py` fails loudly once the meshes
 appear, so it cannot silently drift.
 
-### 5.3 Hand tactile schema + threshold — unchanged
-No tactile topic exists anywhere; `hand_control` reads the Revo2 over serial and
-publishes no sensor topic. Adapter ships `enabled: false`; `release_delta` and
-`direction` have no defaults. A test asserts the shipped config **cannot be
-armed**.
+### 5.3 Hand force schema — narrowed, not cleared
+
+**Retired 2026-10-14:** the hand model is confirmed (BrainCo Revo2 on a Unitree
+G1 23-DOF), the SDK and runtime are available, and the team has already used
+this hardware configuration for IK. "Identify the robot/hand model for SDK
+installation" is **closed** and the former Python 3.8-vs-3.9 concern is moot.
+
+**Still open, on its own evidence:** the force *schema* — which SDK call returns
+force, its field names and types, the channel→finger mapping, the **unit**, and
+the frame rate. A number from the device does not state its own unit, so the
+requested 3 N threshold is uninterpretable until that is documented or
+calibrated.
+
+The detection rule is now the **consecutive-frame, any-channel** rule: per
+channel, this frame minus the previous one; any channel past 3 N produces one
+release request; otherwise the reference advances. The moving average, adaptive
+baseline, `drift_gain`, `debounce_sec` and `min_channels` are gone. The adapter
+still ships `enabled: false`, and a test asserts the shipped config **cannot be
+armed** — now because no channels are declared, not because a threshold is
+missing.
+
+**Also still open and not implied by the hand model being settled:**
+collision-model compatibility (the URDFs model the stock
+`*_wrist_roll_rubber_hand`, not a Revo2) and orchestrator-to-SDK integration
+(nothing has run against the real SDK).
 
 ---
 
@@ -392,8 +412,17 @@ armed**.
    systematic ~10 mm floor indicates a frame mismatch. The existing
    `max_position_error_m = 0.01` guard already rejects the bad case at runtime,
    so this is confirmation, not a safety gap.
-5. Was `grasp_xyz = [0.215, 0.006, 0.025]` measured on the real hand or derived?
-   It exists in no URDF.
+5. ~~Was `grasp_xyz = [0.215, 0.006, 0.025]` measured on the real hand or
+   derived?~~ **ANSWERED 2026-10-14: the intended offset is
+   `[0.215, 0.06, 0.025]`** — the second component is 0.06, not 0.006. Applied
+   to `left`, and mirrored to `right` as `-0.06` under this file's own
+   y-negation convention (verified against both URDFs for all four lateral
+   origins, and `tests/test_forward_kinematics.py:11` asserts the mirror holds).
+   **Two narrow ambiguities remain:** which physical hand it was measured on
+   (immaterial under the mirror convention *unless* the mount is asymmetric),
+   and whether it was measured in the `*_wrist_roll_rubber_hand` frame the code
+   applies it in rather than from some other datum. Consequence for the
+   checkpoints: see row 4 — they are stale by 54.0 mm and must be retrained.
 6. Is `torso_link`'s origin a **physical feature** that can be measured, or a
    modelling datum? That decides whether §0(a) is a measurement or a convention
    declaration.
@@ -626,3 +655,553 @@ service dying mid-route still fails fast.
 Offline totals: **608 run / 606 passed / 2 skipped / 0 failed**;
 `perception/test/test_m1_perception.py` is **blocked** (no `ultralytics`) and is
 not counted as passing.
+
+---
+
+## 11. Session 6 — confirmed hardware facts, tool-point correction, new detection rule
+
+Scope of this session: **unambiguous, hardware-independent changes only.** The
+robot was unavailable throughout. No hardware was commanded, nothing was
+committed, merged or pushed.
+
+### 11.1 Facts now confirmed — stop treating these as open
+
+| Fact | Effect |
+|---|---|
+| Robot is a **Unitree G1 23-DOF**; installed hand is a **BrainCo Revo2** | "identify the robot/hand model for SDK installation" is **retired** |
+| **SDK and runtime are available**; the team has already used this hardware configuration for IK | SDK availability and the Python 3.8-vs-3.9 question are **retired** |
+| Intended hand offset is **`(0.215, 0.06, 0.025)`** | `arm_kinematics.yaml` corrected; see 11.2 |
+| Handover force feedback will be read **directly through the SDK** | no separate ROS tactile-publisher implementation is requested now |
+| Detection rule is **consecutive-frame, any channel, 3 N** | detector rewritten; see 11.3 |
+
+**Explicitly NOT implied by the above**, and still unsupported by evidence:
+
+* **collision-model compatibility** — both URDFs model the stock Unitree
+  `*_wrist_roll_rubber_hand`; no Revo2 geometry exists anywhere in the
+  workspace, and `g1_collision_probe.py` loads
+  `<side>_wrist_roll_rubber_hand.STL`, which is still absent from
+  `arm_planning/meshes/`;
+* **orchestrator-to-SDK integration** — no code in this workspace has ever run
+  against the real SDK;
+* the **unit** of any force reading;
+* the **sign** a human pull produces on a force channel.
+
+### 11.2 Tool point corrected — and the checkpoints are now stale
+
+`arm_kinematics.yaml` `grasp_xyz`: left `[0.215, 0.006, 0.025]` →
+**`[0.215, 0.06, 0.025]`**, right mirrored to `[0.215, -0.06, 0.025]`.
+
+**Reference frame, established from code rather than assumed.**
+`g1_forward_kinematics.forward_kinematics()` composes the five joint
+origins/rotations and applies `grasp_xyz` **last**, so it is expressed in the
+frame after the 5th joint — `<side>_wrist_roll_rubber_hand`. It is *not* in
+`torso_link`, and `<side>_grasp_frame` exists in **neither** URDF (grep count 0
+in both). `torch_g1_fk.TorchG1FK` applies the identical value as `tool_xyz`, so
+the two FK paths agree by construction.
+
+**Why the right hand was mirrored rather than left alone.** This file mirrors
+every lateral quantity, and the URDFs agree: shoulder_pitch `±0.10022`,
+shoulder_roll `±0.038`, shoulder_yaw `±0.00624`, wrist_roll `±0.00188791`. An
+asymmetric `grasp_xyz` would also have broken
+`tests/test_forward_kinematics.py:11`, which asserts
+`left.y ≈ -right.y` on `pose_5d`. Re-run with the corrected values: the mirror
+holds (left `y = +0.208635`, right `y = -0.208625`).
+
+| Consumer | Effect of the change |
+|---|---|
+| **FK** (`g1_forward_kinematics.py:64`, `torch_g1_fk.py:35-36`) | tool point moves 54.0 mm in y. Both paths read the YAML, so both follow. |
+| **IK checkpoints** (`models/g1_*_hybrid_best.pt`) | **STALE.** Each embeds the `arm_kinematics.yaml` it was trained with, including `grasp_xyz = [0.215, ±0.006, 0.025]`. The 54.0 mm redefinition is **12–13×** their own recorded validation error (4.378 mm left, 4.180 mm right). **Retraining is required**; this is evidence from the files, not an assumption. |
+| **Collision masks** (`collision_masks/*.npy`) | **Unaffected, with evidence.** `g1_collision_probe.link_transforms()` composes only `origins_xyz`/`origins_rpy`/`axes` for the five links ending at `hand`, and never reads `grasp_xyz`; the manifests cover 4 joints with `wrist_roll_rad 0.0`. **No regeneration needed.** |
+| **Tool-point / checkpoint definitions** | now cross-checked automatically — see 11.4 |
+| **Downstream grasp geometry** | `grasp_geometry.py` works from `grasp_lateral_offset` and `arm_sign`, not `grasp_xyz`, so it is untouched. |
+
+**Remaining ambiguity, recorded rather than resolved:** which physical hand the
+measurement was taken on (immaterial under the mirror convention *unless* the
+mount is asymmetric), and whether it was taken in the
+`*_wrist_roll_rubber_hand` frame the code applies it in, rather than from a palm
+face, finger pad or CAD datum. Both are written into the config header.
+
+### 11.3 Detection rule replaced
+
+Requested rule, now implemented in `handover/src/handover/tactile_detector.py`:
+compare consecutive frames per channel; if **any** channel's delta passes its
+threshold emit **one** release request; otherwise make that frame the new
+reference and continue. **Any-channel, never a sum across fingers.**
+
+* threshold **3.0** per channel (`DEFAULT_RELEASE_THRESHOLD`) — the *requested
+  setting*, in the SDK's own unconfirmed unit, **not** a measured figure;
+* removed: the 10-frame moving average, the adaptive baseline, `drift_gain`,
+  `stable_tolerance`, `debounce_sec`, `min_channels`, and the `candidate|` event
+  stage. Advancing the reference on every non-qualifying frame *is* the drift
+  tracking;
+* kept: fault handling (a delta is never measured across a dropout or a stale
+  gap), post-arm suppression, one-shot triggering, channel masking, timeouts;
+* **sign convention preserved, not reinvented**: `tactile_frame.difference()`
+  returns a signed `new - reference`, and `release_monitor.DIRECTIONS`
+  (`rise` / `drop` / `either`) selects the comparison. This project never
+  defined *which* applies to a pull, so `either` is the default — the only
+  choice that cannot miss a real pull by guessing the sign wrong. **Narrow
+  ambiguity, flagged in code and config: set `direction` explicitly once the SDK
+  channel semantics are known.**
+
+**Inherent property, recorded so it cannot surprise anyone:** a pull slower than
+the threshold *per frame* is tracked rather than detected — at 30 Hz and 3 N,
+below roughly 90 N/s. `test_a_slow_ramp_never_triggers` pins it.
+
+**Task ownership unchanged.** Reading force through the SDK creates **no second
+release path**. The session-token handshake, held-object and task-state
+validation, the `ARMING` window, cancellation, duplicate-request handling and
+the three release states all still live in `orchestrator/handover_state.py`, and
+`handover` still only calls `/orchestrator/run_auto_release`. Automatic hardware
+release stays **disabled** (`release_integration: false`), and a command
+acknowledgement is still not treated as confirmed finger opening or verified
+transfer.
+
+### 11.4 New guard: the config and the checkpoints can no longer drift silently
+
+`arm_planning/src/arm_planning/checkpoint_meta.py` reads a checkpoint's embedded
+config **without torch** (a `.pt` is a zip; only the tensor rebuilds need torch,
+so they are stubbed) and compares its tool point against the live YAML.
+`arm_planning/test/test_checkpoint_consistency.py` exercises it and records the
+current stale state. Nothing had compared the two before, which is exactly why a
+10× error in `grasp_xyz` could sit in the config unnoticed.
+
+### 11.5 Test results for this session
+
+| Suite | Result |
+|---|---|
+| `handover` | **155 passed** (detector suite rewritten for the new rule: 54 tests) |
+| `orchestrator` | **199 passed** (incl. the 16 real monitor↔orchestrator tests, unchanged in intent) |
+| `arm_planning/test` | **71 passed**, including 11 new checkpoint-consistency tests |
+| `arm_planning/tests` | **not run anywhere** — pytest-style and no `pytest` on host or in the container (pre-existing). The one assertion the offset change could break, the FK mirror, was executed directly with numpy in the container and **passes**. |
+| `slam` | passes in the container; 3 host errors are `numpy` absent on the host (pre-existing) |
+
+### 11.6 Deferred until the robot is available — NOT passed, NOT attempted
+
+* live TF checks and the `camera_init → pelvis` chain;
+* any real sensor reading, SLAM validation or map check;
+* **force-data inspection**: the SDK call, field names, channel mapping, unit,
+  rate and pull sign;
+* IK **retraining** against the corrected tool point, and the ~20-pose
+  `GuardedIKSolver` error measurement that would confirm it;
+* collision-model compatibility for the Revo2;
+* orchestrator-to-SDK integration;
+* every physical motion test.
+
+"TF cannot be tested now" does **not** retire the coordinate-conversion
+requirement. Offline frame analysis continued this session and is what produced
+11.2.
+
+---
+
+## 12. Session 7 — the pipeline was actually tested across module boundaries
+
+Full evidence: **`docs/DATA_PIPELINE_VALIDATION.md`**. Summary only here.
+
+Tested at `7bf01cb` with the previous session's work still uncommitted and
+preserved. No hardware commanded; nothing committed, merged or pushed.
+
+### 12.1 The headline
+
+The pipeline is **broken at boundary 3** (perception → planner frame
+conversion). Boundaries 1, 2 and 7 work over real ROS. Boundaries 3, 4, 5, 6
+and 8 have **no production implementation**: `to_planner_frame`, `plan_grasp`,
+`execute_segment`, `plan_handover_pose`, `execute_stow` and
+`execute_retract_home` are hard-coded `StepResult(False, …)` stubs, and the
+routes containing them can never execute because five capabilities are
+`unresolved`.
+
+**First failing boundary: preflight**, before step 1 — `run_grasp` refuses on 2
+blockers, `run_deliver` on 4, the new `run_deliver_task` on 5, each with zero
+steps and zero hardware calls.
+
+### 12.2 There was no full-task entry point — one was added
+
+`grasp` and `deliver` were separate services and `deliver` begins with
+`require_held_object`, so the framework task needed two calls. Added
+**`/orchestrator/run_deliver_task`** (route `deliver_task`): the grasp steps
+then the delivery steps, **28 steps, one sequencer, one execution lock**, never
+calling another route service. Delivery-phase step names are disambiguated so
+`start_step` resume is unambiguous.
+
+Contract gap recorded, not invented around: `RunRoute.srv` carries one `target`
+but the task needs two destinations.
+
+### 12.3 A prerequisite nobody had done
+
+`orchestrator`, `handover`, `g1_navigation`, `arm_planning` and `arm_control`
+had **no generated Python service modules** in the workspace — only
+`perception` did, so nothing could have talked to anything. All six now build;
+the old `move_base_msgs` blocker is gone (`g1_navigation` dropped that
+dependency).
+
+### 12.4 Two defects found and fixed
+
+* **Route output never crossed the service boundary.** `run_route` discarded the
+  final step's detail, so `navigate_report` — whose whole job is to report a
+  pose — returned `"completed (5 steps)"` with the detection lost. Fixed in
+  `sequencer.py`; the payload now arrives.
+* **A production module could not be imported on Python 3.8.**
+  `joint_space_astar.py` assigned `State = tuple[int, int, int, int]` at
+  runtime, which raises on the interpreter ROS Noetic runs, taking
+  `edge_checked_astar` and `collision_aware_planner` with it. Fixed to
+  `typing.Tuple`; guarded by `arm_planning/test/test_python38_compat.py`.
+
+### 12.5 One defect recorded, deliberately not fixed
+
+perception's `_default_R_base_opt()` is **not orthonormal** (`det = 1.0003760`,
+`max|RᵗR − I| = 3.76e-04`), so `optical_to_base` applies ~188 µm/m of
+scale-and-shear — ~0.19 mm at 1 m, immaterial beside perception's own 1.46 cm
+error. Re-orthonormalising a calibration matrix is perception's call.
+
+### 12.6 Results
+
+**667 passed, 0 failed** — 29 cross-process ROS integration tests plus 638
+offline (handover 155, orchestrator 225, navigation 119, arm_planning 74,
+slam 47, perception 8, arm_control 10). **16 modules blocked, 2 skipped**:
+`ultralytics`, `torch`, `trimesh`, `python-fcl` and `pytest` are all absent.
+
+### 12.7 Verdicts
+
+| Scope | Verdict |
+|---|---|
+| Full-task sequencing with simulated hardware | **PARTIAL** — 28 steps traverse in order, but only in dry run; 6 steps have no implementation |
+| Cross-process ROS transport and contracts | **PASS** |
+| Real algorithm / data processing | **PARTIAL** — perception geometry and arm FK real and correct; YOLO, IK, collision and the nav planner could not run |
+| Physical robot execution | **NOT TESTED** — robot unavailable |
+
+### 12.8 Still deferred to robot access
+
+Everything in §11.6, unchanged, plus: force units/fields/rate/sign, camera
+calibration and physical geometry correctness (distinct from the
+frame-conversion *code*, which is now tested), and any motion.
+
+The harness is retained and re-runs unchanged once the frame contract and the
+three poses land: `orchestrator/test/integration/run_integration.sh`.
+
+---
+
+## 13. Session 8 — adapters wired to the real downstream interfaces
+
+Full detail: **`docs/DATA_PIPELINE_VALIDATION.md` §10**, which supersedes §§1–9
+of that report wherever they disagree. Tested at `7bf01cb` with all prior
+uncommitted work preserved. No hardware commanded; nothing committed, merged or
+pushed.
+
+### 13.1 Correcting an earlier claim
+
+Session 7 reported six adapters as having "no production implementation at
+all". That was true of the *orchestrator*, but misleading about the system:
+**every downstream service it needed already existed as a production node.**
+`/arm/plan_to_pose` and `/arm/plan_grasp_from_point` are implemented in
+`arm_planning/scripts/arm_planning_node.py` with their own readiness gating, and
+`/arm/move_arm_joints` in `arm_control/scripts/arm_control_node.py`. **The gap
+was wiring, not implementation.** No adapter was category B.
+
+### 13.2 What changed
+
+| Adapter | Before | Now |
+|---|---|---|
+| `plan_grasp` | stub | **real** `/arm/plan_grasp_from_point`; stores all four segments |
+| `execute_segment` | stub | **real** `/arm/move_arm_joints`; sends the planner's own path |
+| `plan_handover_pose` | stub | **real** `/arm/plan_to_pose`; blocked while `~poses/handover` is unset |
+| `execute_stow` | stub | **real** plan + execute; blocked while `~poses/stow` is unset |
+| `execute_retract_home` | stub | **real** plan + execute; blocked on the pose *and* on release completion |
+| `to_planner_frame` | stub | **still a stub** — `frame_contract` unresolved |
+
+Also added: `current_joints` capture from `/joint_states` (five arm joints, by
+the planner's own names), `_check_joint_names` refusing a permuted joint order,
+path-integrity checks before anything is sent, and `~poses` — which **ships
+empty**.
+
+### 13.3 What was deliberately not done
+
+* **No preflight check removed or weakened.** `frame_contract`,
+  `handover_pose`, `stow_pose`, `home_pose` and `release_completion` are still
+  `unresolved`, so `grasp`, `deliver` and `deliver_task` are still refused
+  before step 1.
+* **No pose invented.** `~poses: {}`. Writing a number there would not clear the
+  capability either; `arm_planning` owns validating reachability, workspace
+  membership and collision-freedom.
+* **No guessed posture.** Missing arm joints → NOT_READY naming them.
+* **No dummy success.** Every new path validates length, finiteness, joint order
+  and arm side, and propagates the downstream message verbatim.
+
+### 13.4 Results
+
+**683 passed, 0 failed.** 43 cross-process ROS integration tests (was 29; +14
+exercising the new adapters over real ROS against arm-service doubles) and 640
+offline (handover 155, orchestrator 227, navigation 119, arm_planning 74,
+slam 47, perception 8, arm_control 10). 16 modules blocked, 2 skipped.
+
+Two defects fixed: `test_no_kinematics_or_tf_maths` forbade the substring
+`plan_to_pose(` and began false-positiving on a legitimate service call — the
+guard now forbids *defining* a planner and positively asserts the three services
+are wired; and a harness race where a call record could be snapshotted before it
+propagated.
+
+### 13.5 Verdicts
+
+| Scope | Verdict |
+|---|---|
+| Full-task sequencing, simulated hardware | **PARTIAL (improved)** — 28 steps, correct order, one lock; five adapters now real; a real run still refused at preflight |
+| Cross-process ROS transport and contracts | **PASS** — 43 tests, all six service types real and generated |
+| Real planner / perception computation | **NOT VERIFIED** — the arm services here are **doubles**; `torch`/`trimesh`/`python-fcl`/`ultralytics` absent |
+| Physical robot execution | **NOT TESTED** — robot unavailable |
+
+**A test-double success is not a working production adapter.** The claim is
+exactly this: the orchestrator now calls the real interfaces with
+correctly-shaped requests and handles their responses and failures correctly.
+
+### 13.6 PR-ready summary
+
+> **Wire the orchestrator's implementable adapters to the real arm services**
+>
+> Five of six hard-coded failing adapters are replaced with real calls to
+> existing production services. The sixth (`to_planner_frame`) stays NOT_READY
+> because the frame contract is unresolved.
+>
+> * `plan_grasp` → `/arm/plan_grasp_from_point`, keeping all four segments
+> * `execute_segment` → `/arm/move_arm_joints`, sending the planner's own path
+> * `plan_handover_pose`, `execute_stow`, `execute_retract_home` →
+>   `/arm/plan_to_pose` + `/arm/move_arm_joints`, blocked while the poses are unset
+> * new `/orchestrator/run_deliver_task`: the whole framework task as 28 steps
+>   under one execution lock, never calling another route service
+> * joint order, units, arm side, planner output and failure messages are
+>   preserved and checked across every boundary
+> * `~poses` ships empty and **no preflight check was removed**: the five
+>   unresolved capabilities still refuse the route before step 1
+>
+> Adds an isolated cross-process ROS integration harness (own master on :11399,
+> hardware-facing doubles with real generated types, no SDK imported) —
+> **43 tests**. Fixes a route-output wiring defect, a Python 3.8 import defect in
+> `arm_planning`, an over-broad safety guard and a harness race. Records, without
+> fixing, a non-orthonormal perception extrinsics matrix (~188 µm/m).
+>
+> **683 tests pass, 0 fail.** Physical execution remains untested: the robot is
+> unavailable, and the arm services in these tests are doubles.
+
+### 13.7 Still blocked, in dependency order
+
+1. **`frame_contract`** — `base_link → torso_link`, plus the 10 mm `torso_link`
+   disagreement. Unblocks `plan_grasp` and the four grasp segments. **First.**
+2. **Three validated poses** from `arm_planning`. The adapters are ready.
+3. **`release_completion`** — `hand_control` must expose settling.
+4. **`/joint_states` must carry the five arm joints** (only the waist is confirmed).
+5. **Deployment deps** — `torch`, `trimesh`, `python-fcl`, `ultralytics`.
+
+---
+
+## 14. Session 9 — boundary 3 implemented; the 10 mm resolved
+
+Full detail: **`docs/DATA_PIPELINE_VALIDATION.md` §11**, which supersedes §10 and
+§§1–9 of that report. Tested at `7bf01cb` with all prior uncommitted work
+preserved. No hardware commanded; nothing committed, merged or pushed.
+
+### 14.1 The frame conversion is now production code
+
+New service **`/arm/convert_observation`** (`arm_planning/ConvertObservation`),
+maths in `arm_planning/src/arm_planning/frame_conversion.py` (pure, no ROS), TF
+client in `arm_planning_node.py`. The orchestrator's `to_planner_frame` passes
+the point, its frame and its timestamp through that interface and **performs no
+TF mathematics** — verified by a source scan (`tf2_ros`, `lookupTransform`,
+`quaternion`, `math.cos`, `math.sin`, `CONVENTION_OFFSET`: 0 occurrences).
+
+### 14.2 The 10 mm was a convention difference, and is resolved as one
+
+| chain | mode_10 (live TF) | g1_23dof (planner) |
+|---|---|---|
+| `pelvis → torso_link` | 0.044 | 0.054 |
+| `torso_link → shoulder_pitch` | 0.24778 | 0.23778 |
+| `pelvis → shoulder_pitch` | **0.29178** | **0.29178** |
+
+The sums are identical, so neither URDF is wrong — they place the same datum
+10 mm apart. Resolution: a declared convention translation of **−0.010 m in z**
+applied after the TF lookup, **exact at every waist angle** because the waist
+rotates about z and both joint origins have `rpy = 0 0 0`. **No TF frame was
+redefined and neither URDF was modified.**
+
+### 14.3 Frame readiness did NOT clear
+
+`frame_contract` was **split**: `planner_frame_conversion` (resolved, a service)
+and `perception_extrinsics` (**still unresolved** — wrong-robot provenance,
+waist-coupled camera, and a non-orthonormal rotation matrix). A correct
+base→planner transform cannot repair a point computed with the wrong camera
+extrinsics, and the code says so.
+
+```
+grasp  before: frame_contract, stow_pose
+       after:  perception_extrinsics, stow_pose
+```
+
+### 14.4 The perception timestamp limitation
+
+`GetObjectPosition.srv` has **no stamp field**. Addressed explicitly rather than
+hidden: `detect_object` records a **receipt time**, `to_planner_frame` sends it
+with `stamp_is_observation_time=false`, and the conversion refuses when the waist
+moved across that window. The guard is **stateless** (two lookups from the same
+request's TF history). The interface change still needed is a `time stamp` field
+on that response, which is perception's contract to change.
+
+### 14.5 Two audit findings reconciled
+
+* **`RunRoute` now carries `destination`.** A distinct `navigate_to_destination`
+  action drives the delivery leg, so it cannot reuse the pickup waypoint;
+  `deliver_task` is refused up front with an empty destination.
+* **Spec 2.4 ordering defect fixed.** `execute_stow` used to plan *and* execute
+  at step 14 — after `record_held_object`, i.e. **after the hand had closed**.
+  Now `plan_stow` runs at step 7, before any grasp motion, planning from
+  `plan_grasp`'s own `final_joints`; `execute_stow` only replays it.
+
+### 14.6 Results
+
+**729 passed, 0 failed** — 60 cross-process ROS integration tests (was 43) and
+669 offline (handover 155, orchestrator 227, arm_planning 103, navigation 119,
+slam 47, perception 8, arm_control 10). 16 modules blocked, 2 skipped.
+
+Four defects of mine found by the tests and fixed: a `NameError` from computing
+`destination` in `run()` but using it in `_execute()`; `waist_yaw_rad` reporting
+the inverse transform's yaw; a stateful, order-dependent waist guard; and a dead
+`execute_stow` backend action. One method note worth keeping: **"stop publishing
+TF" does not empty a tf2 buffer** (it prunes on insert, not on read), so
+staleness must be tested with an out-of-range stamp.
+
+### 14.7 Verdicts
+
+| Scope | Verdict |
+|---|---|
+| Sequencing with test doubles | **PARTIAL (improved)** — 29 steps, 12 ordering requirements + spec 2.4; zero stubs left; real run still refused at preflight |
+| Actual ROS transport | **PASS** — 60 tests, four real processes incl. the real arm_planning node |
+| Real planner / perception computation | **PARTIAL** — the frame conversion is real and correct; the planner and executor are **doubles**; YOLO still cannot run |
+| Physical robot execution | **NOT TESTED** — robot unavailable |
+
+### 14.8 Blockers
+
+**Removed:** `frame_contract` as a monolithic blocker.
+
+**Remaining:** 1. `perception_extrinsics` (perception) — **first blocker**;
+2. a `stamp` field on `GetObjectPosition.srv`; 3. the three validated poses
+(`handover`, `stow`, `home`) — adapters are ready, `~poses` ships empty;
+4. `release_completion`; 5. the five arm joints on `/joint_states`;
+6. `torch`, `trimesh`, `python-fcl`, `ultralytics`.
+
+### 14.9 PR-ready summary
+
+> **Implement the perception→planner frame conversion; resolve the 10 mm**
+>
+> New `/arm/convert_observation` in arm_planning converts an observed point from
+> `base_link` into the planner's `torso_link`, resolving the two URDFs' 10 mm
+> `torso_link` disagreement as the convention difference it is: the
+> `pelvis → shoulder_pitch` sums are identical in both files, so a declared
+> −0.010 m z translation is applied after the TF lookup, exact at every waist
+> angle. No TF frame redefined, no URDF modified.
+>
+> * conversion maths is pure and offline-testable (29 tests with independent
+>   expectations at zero and nonzero waist, both transform directions, the 10 mm,
+>   and stale/missing transforms)
+> * the orchestrator passes the observation through and does **no** TF maths
+> * `frame_contract` split: the conversion resolves, `perception_extrinsics`
+>   stays **unresolved** (wrong-robot provenance, waist-coupled camera,
+>   non-orthonormal matrix), so grasp is still refused
+> * perception's missing response timestamp is handled with an explicit
+>   receipt-time upper bound plus a stateless waist-motion guard, and the needed
+>   `.srv` change is recorded
+> * `RunRoute` gains `destination`; the delivery leg can no longer reuse the
+>   pickup waypoint
+> * **spec 2.4 ordering defect fixed**: the stow recovery path is now planned
+>   before any grasp motion instead of after the hand closes
+> * confirmed hand offset `(0.215, 0.06, 0.025)` untouched; checkpoints still
+>   recorded as stale (54 mm) and collision masks still unproven against it —
+>   frame conversion is **not** evidence about either
+>
+> **729 tests pass, 0 fail.** Physical execution remains untested; the planner
+> and executor in these tests are doubles.
+
+---
+
+## 15. Session 10 — standing-pose waypoint recorder
+
+Teleoperate the robot to a spot, press `A`, and navigation can return it to that
+exact position and heading. Added to `slam/`; detail in `slam/README.md` §7b.
+
+### 15.1 Why a new store rather than semantic.yaml
+
+`semantic.yaml` holds **object centres**, and `/navigation/navigate` stands
+`approach_distance` away from them. A recorded standing pose is the opposite: it
+is already the spot the robot stood on, so it must go through navigation's
+**exact-pose** interface, `/move_base_simple/goal`, with **no further offset**.
+Offsetting a standing pose would park the robot a metre from the place that was
+deliberately chosen. Two meanings, two files, two goal paths.
+
+| | file | goal path | offset |
+|---|---|---|---|
+| object centre | `semantic.yaml` | `/navigation/navigate` | yes |
+| standing pose | `standing_waypoints.yaml` | `/move_base_simple/goal` | **none** |
+
+### 15.2 Files
+
+| File | |
+|---|---|
+| `slam/src/g1_slam/standing_store.py` | new — pure store (no rospy): atomic writes, map identity, unique naming |
+| `slam/scripts/record_waypoints.py` | new — `A` save, `L` list, `Q` quit |
+| `slam/scripts/goto_waypoint.py` | new — exact-pose goal, `_list:=true`, `_dry_run:=true` |
+| `slam/test/test_standing_store.py` | new — 32 tests |
+| `slam/test/test_waypoint_scripts.py` | new — 29 tests |
+| `slam/CMakeLists.txt`, `slam/README.md` | scripts installed; §7b added |
+
+### 15.3 Guarantees
+
+* **`A` only records.** The recorder contains zero occurrences of
+  `rospy.Publisher`, `move_base_simple`, `enable_motion`, `Twist`, `cmd_vel` or
+  `NavigateToObject` in its code — asserted by a test that strips the docstring.
+* **No root keyboard access.** `termios` / `tty.setcbreak` on the terminal's own
+  stdin; no `keyboard` module, no `/dev/input`, no `sudo`. Exits cleanly if
+  stdin is not a TTY.
+* **Never silent odometry.** A press is refused unless `/slam/manager/state` is
+  True, `map → pelvis` exists and is fresher than `_max_tf_age`, and the
+  transform's own frames are the configured ones — a `camera_init` parent is
+  rejected explicitly.
+* **Map identity.** Records carry the map's `map_name` + `created_at` from its
+  `manifest.yaml`. A different *or re-made* map is refused, on record and again
+  before a goal is sent.
+* **Atomic writes** (temp + fsync + rename), always rewriting from what is on
+  disk, so existing and hand-edited records survive.
+* **Motion gates untouched.** `goto_waypoint.py` never calls
+  `/navigation/enable_motion`; it reports `/navigation/motion_enabled` so a
+  closed gate explains itself.
+* **No new localisation algorithm.** The optional `.pcd` snapshot is a human
+  reference; nothing reads it back. The relocalizer still owns localisation.
+
+### 15.4 Restart validity
+
+`map` is defined by the **saved map**, not the session: FAST-LIO2 re-creates
+`camera_init` every power-on, and the relocalizer publishes `map → camera_init`
+so `map` means the same thing again. Records therefore store map-frame
+`x, y, yaw` plus the map identity; after a restart, once localisation to that
+same saved map succeeds, the coordinates denote the same physical spot.
+
+### 15.5 Tests
+
+**61 new, all passing.** `slam` went 47 → **108**. Covered: recording, reload,
+hand-edited records surviving an append, invalid/stale/odometry-frame/zero-stamp
+TF, map mismatch (including a map re-made under the same name), goal mapping
+with exact equality (proving no offset), atomicity under a failed `os.replace`,
+and a drift guard that reads navigation's own `nav_client.py` so the mirrored
+`ACTIVE`/`TERMINAL` sets cannot diverge (g1_slam must not import g1_navigation —
+that would be a dependency cycle).
+
+Verified end to end on an isolated master: `_list:=true`, `_dry_run:=true`, and
+a refused map mismatch.
+
+### 15.6 Known gap
+
+**Standing poses are not yet consumable by `run_deliver_task`.** Its `target` /
+`destination` resolve through `semantic.yaml` via `lookup_object` and then apply
+`default_approach_distance`, so passing a standing-pose name fails at the
+lookup — and copying the pose into `semantic.yaml` would reintroduce the 0.6 m
+offset. Driving to a standing pose is `goto_waypoint.py` for now.
+
+Closing it needs the orchestrator to distinguish the two kinds of target. The
+open decision is **how**: an explicit `target_kind` field on `RunRoute`
+(preferred — a naming convention that silently switches goal interface is a trap)
+or a prefix convention.

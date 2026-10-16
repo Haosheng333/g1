@@ -44,6 +44,30 @@ timeouts:
   # before the arm retracts.
   recipient_settle_sec: 1.5
 
+  # Per-waypoint budget handed to /arm/move_arm_joints. 0 = use that node's
+  # own default, which is the safer choice until a real arm has been timed.
+  waypoint_sec: 0.0
+
+# --- arm poses -------------------------------------------------------------------------
+# EMPTY ON PURPOSE. Each entry would be [x, y, z, rx, rz] in torso_link, metres
+# and radians, matching PlanToPose.srv's target_pose.
+#
+# The plan+execute wiring for these steps IS implemented: plan_handover_pose,
+# execute_stow and execute_retract_home call the real /arm/plan_to_pose and
+# /arm/move_arm_joints. Only the poses are missing, so those steps report
+# NOT_READY rather than moving.
+#
+# Filling a number in here does NOT make the task runnable, and is not a way to
+# clear the blocker: the handover_pose / stow_pose / home_pose capabilities stay
+# `unresolved` in orchestrator/src/orchestrator/capabilities.py, so preflight
+# refuses the route regardless of what is written below. arm_planning owns
+# publishing a pose that is reachable, inside the trained workspace,
+# collision-free, and -- for the handover -- sensible to hand to a person.
+poses: {}
+  # handover: [0.00, 0.00, 0.00, 0.00, 0.00]   # <- arm_planning must supply
+  # stow:     [0.00, 0.00, 0.00, 0.00, 0.00]
+  # home:     [0.00, 0.00, 0.00, 0.00, 0.00]
+
 # How long preflight waits for each service to appear before calling it missing.
 service_timeout_s: 1.0
 

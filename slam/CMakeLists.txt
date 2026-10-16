@@ -29,6 +29,8 @@ catkin_install_python(PROGRAMS
   scripts/slam_manager.py
   scripts/relocalizer.py
   scripts/grid_composer.py
+  scripts/record_waypoints.py
+  scripts/goto_waypoint.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
