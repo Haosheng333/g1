@@ -1,34 +1,57 @@
-"""Multi-channel tactile pull detector. One instance per hand. No ROS, no SDK.
+"""Multi-channel force pull detector. One instance per hand. No ROS, no SDK.
 
-Reuses the state names and result types of `release_monitor` (which stays as
-the single-scalar case) and adds what the framework's detector section
-requires: a moving average, an adaptive baseline, post-arm suppression,
-channel masks, and per-channel-kind comparison.
+DETECTION RULE -- consecutive frames, any channel (requested 2026-10-14)
+Each valid frame is compared against the one before it, per channel:
 
-    IDLE --arm()--> BASELINING --10 stable frames--> MONITORING --verified--> TRIGGERED
-      ^                 |                                |                       |
-      +--- timeout -----+------------ timeout -----------+----- disarm() --------+
-                        ^                                |
-                        +--------- invalid frame --------+   (fault: fresh baseline required)
+    delta[c] = difference(frame[c], reference[c])     for each enabled channel c
 
-CALIBRATION, NOT DEFAULTS. `release_threshold`, `stable_tolerance`,
-`direction` (per channel) and `debounce_sec` have NO defaults. They are
-physical properties of a specific hand and object and must come from real
-recordings (see handover/README.md). `validate()` refuses to arm without them,
-so the detector cannot fire on a guessed number.
+  * if ANY enabled channel's delta passes its threshold, ONE release request is
+    generated and the detector latches TRIGGERED;
+  * if NO channel passes, the reference frame is replaced by this frame and
+    monitoring continues.
 
-Frame counts and suppression duration DO have defaults, because the framework
-states them: 10 baseline frames, 10-frame moving average, >= 1.0 s suppression.
+It is an ANY-CHANNEL condition. Deltas are never summed across fingers: a sum
+would let several sub-threshold fingers add up to a release nobody pulled, and
+would also let one real pull be diluted by quiet channels.
+
+This replaces an earlier design built on a 10-frame moving average plus an
+adaptive baseline with a drift gain. That machinery is gone, not merely
+bypassed: with a one-frame reference there is no window to average over and no
+slow-drift term to absorb, because the reference is rewritten on every
+non-qualifying frame -- which IS the drift tracking, exactly as requested.
+
+    IDLE --arm()--> REFERENCING --1 valid frame--> MONITORING --delta--> TRIGGERED
+      ^                  |                             |                     |
+      +---- timeout -----+----------- timeout ---------+----- disarm() ------+
+                         ^                             |
+                         +------- invalid frame -------+  (fault: fresh reference)
+
+SIGN CONVENTION -- preserved from this project, not reinvented.
+`tactile_frame.difference()` returns a SIGNED delta for force-like channels
+(`new - reference`), and `release_monitor.DIRECTIONS` defines how a signed delta
+is compared: `rise` needs delta >= +threshold, `drop` needs delta <= -threshold,
+`either` needs abs(delta) >= threshold. That mechanism is kept verbatim.
+
+What this project never defined is which of the three applies to a human pull,
+because that depends on how the hand's force channels are wired. `either` is the
+default here, since "delta exceeds 3 N" reads as a magnitude, and it is the only
+choice that cannot miss a real pull by guessing the sign wrong. It stays
+per-channel configurable. CONFIRM THE SIGN ON THE ROBOT and set `direction`
+explicitly once the SDK's channel semantics are known.
+
+THRESHOLD. `release_threshold` defaults to DEFAULT_RELEASE_THRESHOLD (3.0) per
+enabled channel: the requested setting, in the SDK's own force unit. It is NOT a
+measured hardware figure, and the unit is unconfirmed -- see handover/README.md.
+The detector still refuses to arm with no channels declared, because a threshold
+is meaningless without knowing what it is thresholding.
 """
 from __future__ import annotations
 
 import math
-from collections import deque
 from dataclasses import dataclass, field
 
 from handover import tactile_frame as tf
 from handover.release_monitor import (
-    BASELINING,
     DIRECTIONS,
     IDLE,
     MONITORING,
@@ -36,51 +59,61 @@ from handover.release_monitor import (
     Event,
     Outcome,
 )
+from handover.release_monitor import BASELINING as REFERENCING
 
 __all__ = [
-    "TactileDetectorConfig", "TactileReleaseDetector",
-    "IDLE", "BASELINING", "MONITORING", "TRIGGERED",
+    "TactileDetectorConfig", "TactileReleaseDetector", "DEFAULT_RELEASE_THRESHOLD",
+    "DEFAULT_DIRECTION", "IDLE", "REFERENCING", "MONITORING", "TRIGGERED",
 ]
+
+#: Requested per-channel release threshold, in the SDK's force unit. A requested
+#: setting, not a measured hardware characteristic.
+DEFAULT_RELEASE_THRESHOLD = 3.0
+
+#: Compare the magnitude of the signed delta. See "SIGN CONVENTION" above.
+DEFAULT_DIRECTION = "either"
 
 
 @dataclass
 class TactileDetectorConfig:
-    """Per-hand detector settings. The four calibration items have no defaults."""
+    """Per-hand detector settings for the consecutive-frame rule."""
 
-    #: channel name -> ChannelSpec. Declared by configuration, not assumed.
+    #: channel name -> ChannelSpec. Declared by configuration, never assumed.
     channels: dict = field(default_factory=dict)
     #: Channel mask: names the detector may use. Empty = every triggerable channel.
     enabled_channels: tuple = ()
 
-    # --- calibration: NO defaults ---
-    release_threshold: dict = field(default_factory=dict)   # name -> float
-    stable_tolerance: dict = field(default_factory=dict)    # name -> float
-    direction: dict = field(default_factory=dict)           # name -> rise|drop|either
-    debounce_sec: float | None = None
+    #: channel -> delta that counts as a pull. Missing entries take
+    #: DEFAULT_RELEASE_THRESHOLD (the requested 3 N).
+    release_threshold: dict = field(default_factory=dict)
+    #: channel -> rise | drop | either. Missing entries take DEFAULT_DIRECTION.
+    direction: dict = field(default_factory=dict)
 
-    # --- framework-stated, so defaulted ---
-    baseline_frames: int = 10
-    moving_average_frames: int = 10
+    #: No trigger within this long of arming: the arm's own deceleration can
+    #: produce a frame-to-frame force step that is not a human pull. The
+    #: reference still advances while suppressed, so a suppressed step is not
+    #: re-counted afterwards.
     post_arm_suppress_sec: float = 1.0
 
-    # --- signal processing ---
+    #: A gap longer than this between frames is a FAULT, never evidence: across
+    #: a long gap "consecutive" no longer means consecutive.
     sample_timeout_sec: float = 0.5
+    #: Overall arm-to-trigger budget. 0 disables.
     monitor_timeout_sec: float = 120.0
-    baseline_timeout_sec: float = 10.0
-    #: How many enabled channels must qualify simultaneously to trigger.
-    min_channels: int = 1
-    #: Fraction of the in-band difference folded into the baseline each frame.
-    #: Dimensionless, so unlike the thresholds it may carry a default. Snapping
-    #: the baseline straight onto the moving average (gain 1.0) would absorb any
-    #: ramp slower than stable_tolerance per frame, which erases a slow pull;
-    #: a small gain leaves a persistent difference that still crosses the
-    #: threshold. Validate the (drift_gain, release_threshold) PAIR together on
-    #: the stationary-hold and deliberate-pull recordings.
-    drift_gain: float = 0.05
+    #: Give up waiting for the first valid reference frame after this long.
+    reference_timeout_sec: float = 10.0
 
     # ------------------------------------------------------------------ helpers
+    def threshold_for(self, name: str) -> float:
+        value = self.release_threshold.get(name)
+        return DEFAULT_RELEASE_THRESHOLD if value is None else float(value)
+
+    def direction_for(self, name: str) -> str:
+        value = self.direction.get(name)
+        return DEFAULT_DIRECTION if value is None else value
+
     def active_channels(self) -> list:
-        """Enabled channels the detector is allowed to trigger on, in order."""
+        """Enabled channels the detector may trigger on, in order."""
         triggerable = [n for n, s in sorted(self.channels.items()) if s.triggerable]
         if not self.enabled_channels:
             return triggerable
@@ -97,8 +130,9 @@ class TactileDetectorConfig:
 
         if not self.channels:
             problems.append(
-                "no tactile channels declared (the SDK schema is unconfirmed; see "
-                "handover/README.md)"
+                "no force channels declared (the SDK force schema is unconfirmed; see "
+                "handover/README.md). A 3 N threshold is meaningless until we know "
+                "which channels it applies to and in what unit."
             )
         for name in sorted(self.enabled_channels):
             if name not in self.channels:
@@ -117,76 +151,25 @@ class TactileDetectorConfig:
             )
 
         for name in active:
-            t = self.release_threshold.get(name)
-            if t is None:
-                problems.append(
-                    "release_threshold[%r] is not configured (must be measured on the "
-                    "real hand, not guessed)" % (name,)
-                )
-            elif not isinstance(t, (int, float)) or isinstance(t, bool) \
-                    or not math.isfinite(float(t)) or float(t) <= 0.0:
-                problems.append("release_threshold[%r] must be a finite positive number" % (name,))
-
-            s = self.stable_tolerance.get(name)
-            if s is None:
-                problems.append(
-                    "stable_tolerance[%r] is not configured (baseline-drift band; must "
-                    "come from a stationary-hold recording)" % (name,)
-                )
-            elif not isinstance(s, (int, float)) or isinstance(s, bool) \
-                    or not math.isfinite(float(s)) or float(s) < 0.0:
-                problems.append("stable_tolerance[%r] must be a finite non-negative number" % (name,))
-
-            if t is not None and s is not None:
-                try:
-                    if float(s) >= float(t):
-                        problems.append(
-                            "stable_tolerance[%r]=%s must be smaller than "
-                            "release_threshold[%r]=%s, otherwise drift absorption would "
-                            "swallow every pull" % (name, s, name, t)
-                        )
-                except (TypeError, ValueError):
-                    pass
-
-            d = self.direction.get(name)
-            if d is None:
-                problems.append(
-                    "direction[%r] is not configured (does a pull make this channel rise "
-                    "or drop? must be confirmed on the real hand)" % (name,)
-                )
-            elif d not in DIRECTIONS:
+            threshold = self.release_threshold.get(name)
+            if threshold is not None:
+                if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) \
+                        or not math.isfinite(float(threshold)) or float(threshold) <= 0.0:
+                    problems.append(
+                        "release_threshold[%r] must be a finite positive number" % (name,))
+            configured = self.direction.get(name)
+            if configured is not None and configured not in DIRECTIONS:
                 problems.append(
                     "direction[%r] must be one of %s" % (name, ", ".join(DIRECTIONS)))
 
-        if self.debounce_sec is None:
-            problems.append(
-                "debounce_sec is not configured (how long a qualifying change must "
-                "persist; must come from real pull recordings)"
-            )
-        elif not isinstance(self.debounce_sec, (int, float)) or \
-                not math.isfinite(float(self.debounce_sec)) or float(self.debounce_sec) < 0.0:
-            problems.append("debounce_sec must be a finite non-negative number")
-
-        if self.baseline_frames < 1:
-            problems.append("baseline_frames must be at least 1")
-        if self.moving_average_frames < 1:
-            problems.append("moving_average_frames must be at least 1")
         if self.post_arm_suppress_sec < 0.0:
             problems.append("post_arm_suppress_sec must not be negative")
         if self.sample_timeout_sec <= 0.0:
             problems.append("sample_timeout_sec must be positive")
-        if self.baseline_timeout_sec <= 0.0:
-            problems.append("baseline_timeout_sec must be positive")
+        if self.reference_timeout_sec <= 0.0:
+            problems.append("reference_timeout_sec must be positive")
         if self.monitor_timeout_sec < 0.0:
             problems.append("monitor_timeout_sec must not be negative (0 disables)")
-        if not (0.0 < float(self.drift_gain) <= 1.0):
-            problems.append("drift_gain must be in (0, 1]")
-        if self.min_channels < 1:
-            problems.append("min_channels must be at least 1")
-        elif active and self.min_channels > len(active):
-            problems.append(
-                "min_channels=%d exceeds the %d enabled channel(s)"
-                % (self.min_channels, len(active)))
         return problems
 
 
@@ -194,15 +177,12 @@ class TactileDetectorConfig:
 class TactileEvent(Event):
     """An Event plus per-channel detail, for diagnostics and recordings."""
 
-    #: channel -> signed difference of the moving average from the baseline.
+    #: channel -> signed delta of this frame from the reference frame.
     diffs: dict = field(default_factory=dict)
-    #: channels currently past their threshold in the configured direction.
+    #: channels whose delta passed their threshold in the configured direction.
     qualifying: tuple = ()
-    #: True when a candidate is being debounced but has not yet qualified.
-    candidate: bool = False
     #: True when the frame was rejected (missing/stale/malformed/non-finite).
     fault: bool = False
-    held_sec: float = 0.0
 
 
 class TactileReleaseDetector(object):
@@ -217,13 +197,10 @@ class TactileReleaseDetector(object):
 
     # ------------------------------------------------------------------ internals
     def _reset_run(self) -> None:
-        """Clear samples, baseline, debounce state and pending triggers."""
-        self._frames = deque(maxlen=max(1, self.config.moving_average_frames))
-        self._baseline_buffer = deque(maxlen=max(1, self.config.baseline_frames))
-        self._baseline = {}
+        """Clear the reference frame and any latched trigger."""
+        self._reference = {}
         self._armed_at = None
         self._last_stamp = None
-        self._over_since = None
         self._fired = False
 
     @property
@@ -231,8 +208,9 @@ class TactileReleaseDetector(object):
         return self._state
 
     @property
-    def baseline(self) -> dict:
-        return dict(self._baseline)
+    def reference(self) -> dict:
+        """The frame the next delta will be measured against."""
+        return dict(self._reference)
 
     @property
     def last_reason(self) -> str:
@@ -240,18 +218,11 @@ class TactileReleaseDetector(object):
 
     @property
     def armed(self) -> bool:
-        return self._state in (BASELINING, MONITORING)
+        return self._state in (REFERENCING, MONITORING)
 
     @property
     def fired(self) -> bool:
         return self._fired
-
-    def moving_average(self) -> dict:
-        """Mean of the retained valid frames, per active channel."""
-        if not self._frames:
-            return {}
-        names = self.config.active_channels()
-        return {n: sum(f[n] for f in self._frames) / float(len(self._frames)) for n in names}
 
     # ------------------------------------------------------------------ commands
     def arm(self, now: float) -> Outcome:
@@ -265,9 +236,8 @@ class TactileReleaseDetector(object):
 
         self._reset_run()
         self._armed_at = float(now)
-        self._state = BASELINING
-        self._last_reason = "armed; collecting %d stable baseline frames" % (
-            self.config.baseline_frames,)
+        self._state = REFERENCING
+        self._last_reason = "armed; waiting for the first valid reference frame"
         return Outcome(True, self._last_reason)
 
     def disarm(self, now: float = 0.0, reason: str = "disarmed by request") -> Outcome:
@@ -291,11 +261,10 @@ class TactileReleaseDetector(object):
                     self.config.monitor_timeout_sec,)
                 self.disarm(now, reason)
                 return TactileEvent(state=IDLE, reason=reason)
-        if self._state == BASELINING and self._armed_at is not None:
-            if now - self._armed_at > self.config.baseline_timeout_sec:
-                reason = "TIMEOUT: only %d of %d stable baseline frames within %.1fs" % (
-                    len(self._baseline_buffer), self.config.baseline_frames,
-                    self.config.baseline_timeout_sec)
+        if self._state == REFERENCING and self._armed_at is not None:
+            if now - self._armed_at > self.config.reference_timeout_sec:
+                reason = "TIMEOUT: no valid reference frame within %.1fs" % (
+                    self.config.reference_timeout_sec,)
                 self.disarm(now, reason)
                 return TactileEvent(state=IDLE, reason=reason)
 
@@ -311,135 +280,83 @@ class TactileReleaseDetector(object):
         self._last_stamp = now
         if stale:
             return self._fault(
-                now, "tactile data went stale (gap > %.3fs)" % self.config.sample_timeout_sec)
+                now,
+                "force data went stale (gap > %.3fs), so the next frame is not "
+                "consecutive with the reference" % self.config.sample_timeout_sec)
 
-        if self._state == BASELINING:
-            return self._baselining(now, check.clean, names)
+        if self._state == REFERENCING:
+            return self._take_reference(check.clean, names)
         return self._monitoring(now, check.clean, names)
 
     # ------------------------------------------------------------------ fault path
     def _fault(self, now: float, reason: str) -> TactileEvent:
-        """Invalid data is never evidence, and costs us the baseline.
+        """Invalid data is never evidence, and costs us the reference frame.
 
-        Any in-progress debounce is cancelled and the detector drops back to
-        BASELINING, so detection resumes only after a fresh valid baseline.
+        The detector drops back to REFERENCING, so a delta is only ever measured
+        between two frames that were both valid and genuinely consecutive.
         """
-        self._over_since = None
-        self._frames.clear()
-        self._baseline_buffer.clear()
-        self._baseline = {}
-        self._state = BASELINING
+        self._reference = {}
+        self._state = REFERENCING
         self._last_reason = (
-            "FAULT: %s; a fresh baseline is required before detection resumes" % reason)
-        return TactileEvent(state=BASELINING, wait=True, fault=True, reason=self._last_reason)
+            "FAULT: %s; a fresh reference frame is required before detection resumes"
+            % reason)
+        return TactileEvent(state=REFERENCING, wait=True, fault=True, reason=self._last_reason)
 
-    # ------------------------------------------------------------------ baselining
-    def _baselining(self, now: float, clean: dict, names) -> TactileEvent:
-        self._baseline_buffer.append(clean)
-        have = len(self._baseline_buffer)
-        need = self.config.baseline_frames
-        if have < need:
-            self._last_reason = "baselining %d/%d" % (have, need)
-            return TactileEvent(state=BASELINING, reason=self._last_reason)
-
-        # "Stable" means the spread across the collected frames is inside each
-        # channel's calibrated tolerance. A hand still vibrating is not a baseline.
-        unstable = []
-        for n in names:
-            series = [f[n] for f in self._baseline_buffer]
-            spread = max(series) - min(series)
-            tol = float(self.config.stable_tolerance[n])
-            if spread > tol:
-                unstable.append("%s spread %.6g > tolerance %.6g" % (n, spread, tol))
-        if unstable:
-            # Keep sliding: the deque already dropped the oldest frame.
-            self._last_reason = "baselining: not stable yet (%s)" % "; ".join(unstable)
-            return TactileEvent(state=BASELINING, reason=self._last_reason)
-
-        self._baseline = {
-            n: sum(f[n] for f in self._baseline_buffer) / float(have) for n in names
-        }
-        self._frames.clear()
+    # ------------------------------------------------------------------ reference
+    def _take_reference(self, clean: dict, names) -> TactileEvent:
+        """The first valid frame after arming or a fault becomes the reference."""
+        self._reference = dict(clean)
         self._state = MONITORING
-        self._last_reason = "monitoring; baseline %s" % (
-            {k: round(v, 6) for k, v in self._baseline.items()},)
+        self._last_reason = "monitoring; reference %s" % (
+            {k: round(clean[k], 6) for k in names},)
         return TactileEvent(state=MONITORING, reason=self._last_reason)
 
     # ------------------------------------------------------------------ monitoring
-    def _passes(self, name: str, diff: float) -> bool:
-        threshold = float(self.config.release_threshold[name])
-        want = self.config.direction[name]
+    def _passes(self, name: str, delta: float) -> bool:
+        """Compare one signed delta using this project's direction convention."""
+        threshold = self.config.threshold_for(name)
+        want = self.config.direction_for(name)
         if want == "rise":
-            return diff >= threshold
+            return delta >= threshold
         if want == "drop":
-            return diff <= -threshold
-        return abs(diff) >= threshold
-
-    def _qualifies(self, name: str, avg_diff: float, latest_diff: float) -> bool:
-        """Both the smoothed and the instantaneous difference must pass.
-
-        The moving average alone is not enough: a 10-frame window stretches a
-        single-frame spike into ~0.33 s at 30 Hz, which can out-last a shorter
-        debounce window and trigger on a transient. Requiring the latest frame
-        to agree makes "persist for debounce_sec" mean the pull is still
-        happening, not merely still inside the averaging window.
-        """
-        return self._passes(name, avg_diff) and self._passes(name, latest_diff)
+            return delta <= -threshold
+        return abs(delta) >= threshold
 
     def _monitoring(self, now: float, clean: dict, names) -> TactileEvent:
-        self._frames.append(clean)
-        average = self.moving_average()
-
-        diffs, latest_diffs = {}, {}
-        for n in names:
-            spec = self.config.channels[n]
-            diffs[n] = tf.difference(spec, average[n], self._baseline[n])
-            latest_diffs[n] = tf.difference(spec, clean[n], self._baseline[n])
-
-        qualifying = tuple(n for n in names if self._qualifies(n, diffs[n], latest_diffs[n]))
-
-        # Adaptive baseline: absorb slow drift ONLY on channels sitting inside
-        # their stable band. A channel past its tolerance keeps its baseline, so
-        # a developing pull is never erased by the drift update.
-        gain = float(self.config.drift_gain)
-        for n in names:
-            if abs(diffs[n]) <= float(self.config.stable_tolerance[n]):
-                self._baseline[n] = self._baseline[n] + gain * diffs[n]
+        diffs = {
+            n: tf.difference(self.config.channels[n], clean[n], self._reference[n])
+            for n in names
+        }
+        # ANY channel, independently. Never a sum across fingers.
+        qualifying = tuple(n for n in names if self._passes(n, diffs[n]))
 
         suppressed = (
             self._armed_at is not None
             and (now - self._armed_at) < self.config.post_arm_suppress_sec
         )
 
-        if len(qualifying) < self.config.min_channels:
-            self._over_since = None
-            self._last_reason = "monitoring; %d/%d channels qualifying" % (
-                len(qualifying), self.config.min_channels)
+        if not qualifying:
+            # No channel qualifies: this frame becomes the new reference. That
+            # single line is the whole drift-tracking story.
+            self._reference = dict(clean)
+            self._last_reason = "monitoring; no channel past threshold, reference advanced"
             return TactileEvent(state=MONITORING, reason=self._last_reason,
-                                diffs=diffs, qualifying=qualifying)
+                                diffs=diffs, qualifying=())
 
         if suppressed:
-            # Post-arm settling: the arm's own deceleration can look like a pull.
-            self._over_since = None
+            # Advance the reference anyway, so a suppressed step is absorbed
+            # rather than re-detected the moment suppression ends.
+            self._reference = dict(clean)
             self._last_reason = (
-                "monitoring; %d channel(s) qualifying but still inside the %.2fs post-arm "
-                "suppression window" % (len(qualifying), self.config.post_arm_suppress_sec))
+                "monitoring; %d channel(s) past threshold but still inside the %.2fs "
+                "post-arm suppression window; reference advanced"
+                % (len(qualifying), self.config.post_arm_suppress_sec))
             return TactileEvent(state=MONITORING, reason=self._last_reason,
                                 diffs=diffs, qualifying=qualifying)
-
-        if self._over_since is None:
-            self._over_since = now
-        held = now - self._over_since
-
-        if held < float(self.config.debounce_sec):
-            self._last_reason = "candidate pull on %s, held %.3fs of %.3fs" % (
-                ",".join(qualifying), held, self.config.debounce_sec)
-            return TactileEvent(state=MONITORING, reason=self._last_reason, diffs=diffs,
-                                qualifying=qualifying, candidate=True, held_sec=held)
 
         self._state = TRIGGERED
         self._fired = True
-        self._last_reason = "pull verified on %s after %.3fs (diffs %s)" % (
-            ",".join(qualifying), held, {k: round(diffs[k], 6) for k in qualifying})
+        self._last_reason = "pull detected on %s (deltas %s)" % (
+            ",".join(qualifying), {k: round(diffs[k], 6) for k in qualifying})
         return TactileEvent(state=TRIGGERED, trigger=True, reason=self._last_reason,
-                            diffs=diffs, qualifying=qualifying, held_sec=held)
+                            diffs=diffs, qualifying=qualifying)

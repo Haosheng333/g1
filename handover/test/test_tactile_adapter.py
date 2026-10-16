@@ -202,13 +202,25 @@ class ShippedConfigIsSafe(unittest.TestCase):
     def test_release_integration_is_off_in_the_shipped_config(self):
         self.assertFalse(self._yaml()["release_integration"])
 
-    def test_calibration_values_are_unset_in_the_shipped_config(self):
+    def test_per_channel_tables_are_empty_in_the_shipped_config(self):
+        """Empty means "use the requested defaults", not "guessed per channel".
+
+        Under the consecutive-frame rule the threshold has a value by design
+        (the requested 3 N) and the direction defaults to a magnitude compare,
+        so an empty table is correct. What must stay empty is any per-channel
+        override, because naming a channel implies knowing the schema.
+        """
         calib = self._yaml()["calibration"]
-        self.assertIn(calib["debounce_sec"], (None, ""),
-                      "a shipped debounce would be a guess")
-        self.assertEqual(calib["release_threshold"], {}, "a shipped threshold would be a guess")
-        self.assertEqual(calib["stable_tolerance"], {}, "a shipped tolerance would be a guess")
-        self.assertEqual(calib["direction"], {}, "a shipped direction would be a guess")
+        self.assertEqual(calib["release_threshold"], {},
+                         "a per-channel threshold implies a confirmed schema")
+        self.assertEqual(calib["direction"], {},
+                         "a per-channel direction implies a confirmed sign convention")
+        self.assertEqual(calib["enabled_channels"] or [], [],
+                         "a shipped channel mask implies a confirmed schema")
+        self.assertNotIn("stable_tolerance", calib,
+                         "stable_tolerance belonged to the retired adaptive-baseline rule")
+        self.assertNotIn("debounce_sec", calib,
+                         "debounce_sec belonged to the retired moving-average rule")
 
     def test_the_shipped_config_contains_no_yaml_nulls(self):
         """A bare `key:` uploads None, which the ROS parameter server rejects.
@@ -240,15 +252,11 @@ class ShippedConfigIsSafe(unittest.TestCase):
             channels={},                                  # nothing mapped
             enabled_channels=tuple(calib["enabled_channels"] or []),
             release_threshold=dict(calib["release_threshold"] or {}),
-            stable_tolerance=dict(calib["stable_tolerance"] or {}),
             direction=dict(calib["direction"] or {}),
-            debounce_sec=None if calib["debounce_sec"] == "" else calib["debounce_sec"],
-            baseline_frames=data["baseline_frames"],
-            moving_average_frames=data["moving_average_frames"],
             post_arm_suppress_sec=data["post_arm_suppress_sec"],
             sample_timeout_sec=data["sample_timeout_sec"],
             monitor_timeout_sec=data["monitor_timeout_sec"],
-            baseline_timeout_sec=data["baseline_timeout_sec"],
+            reference_timeout_sec=data["reference_timeout_sec"],
         ))
         outcome = detector.arm(0.0)
         self.assertFalse(outcome.ok)
