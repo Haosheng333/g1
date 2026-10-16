@@ -1,0 +1,18 @@
+# /auto_release_monitor/arm  --  start monitoring one hand for a human pull.
+#
+# Replaces std_srvs/Trigger, which had no request fields and so could not carry
+# the session token. Without the token the orchestrator cannot tell a pull
+# detected during THIS handover from one detected during an earlier handover and
+# delivered late: the release request carries no origin time, so stamping its
+# receipt time shows only when it arrived.
+#
+# ONE AUTHORITATIVE TOKEN. The orchestrator creates it (handover_state.
+# new_session_token) once per arming, passes it here, and the monitor echoes
+# that same value back in its release request. The monitor never generates one.
+string side           # "left" or "right"; must match the monitor's own ~side
+string session_token  # opaque, non-empty; echoed verbatim in the release request
+---
+bool   success
+string message
+# Echoed back so the caller can confirm the monitor stored the token it sent.
+string session_token

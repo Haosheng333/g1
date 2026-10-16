@@ -35,7 +35,9 @@
   <arg name="map_name" default="current"/>
   <arg name="rviz" default="false"/>
   <arg name="motion_enabled" default="false"/>
-  <arg name="with_base_link" default="false"/>
+  <!-- Settled: base_link is an identity alias of pelvis, ON by default
+       (docs/FRAME_CONTRACT.md). Matches system_bringup/navigation.launch. -->
+  <arg name="with_base_link" default="true"/>
   <arg name="joint_mode" default="relay"/>
   <arg name="joint_input_topic" default=""/>
   <arg name="network_interface" default=""/>

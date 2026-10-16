@@ -20,6 +20,12 @@
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>cv_bridge</depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <!-- cv2 is imported directly by the catkin-installed scripts/demo_m1.py -->
+  <exec_depend>python3-opencv</exec_depend>
+  <!-- launch/perception.launch includes $(find realsense2_camera)/launch/rs_camera.launch,
+       so roslaunch cannot resolve this package's launch file without the driver. -->
+  <exec_depend>realsense2_camera</exec_depend>
 
   <export>
     <catkin_python_setup />

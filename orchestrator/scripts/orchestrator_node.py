@@ -36,6 +36,7 @@ from std_msgs.msg import Bool, Empty, String
 from std_srvs.srv import SetBool, Trigger
 
 from orchestrator import capabilities as caps
+from orchestrator import handover_state as hs
 from orchestrator import nav_guard as ng
 from orchestrator import preflight as pf
 from orchestrator import routes as routes_mod
@@ -53,6 +54,19 @@ READY_FLAGS = (
 
 #: Joint name slam needs for camera_init -> pelvis (slam/config/g1_tf.yaml).
 WAIST_JOINT = "waist_yaw_joint"
+
+#: Three delivery steps need a pose that exists nowhere in the repository. A
+#: search of arm_planning/{config,scripts}, arm_control and hand_control/config
+#: for home|rest|stow|neutral|park|tuck returns nothing, and the grasp retract
+#: is object-relative (it starts at the lift pose), so it cannot be replayed
+#: after a handover. Inventing joint angles here would be a guess, so the step
+#: fails with this instead.
+_MISSING_POSE = (
+    "NOT_READY: no %s pose is defined anywhere in this repository, so this step "
+    "cannot be planned. It needs arm_planning to publish a validated %s "
+    "(reachable, inside the trained workspace, collision-free). The grasp retract "
+    "path is NOT a substitute: it starts at the lift pose and inherits y and z "
+    "from the grasped object. See docs/DELIVERY_FLOW.md.")
 
 
 class RosProbe(pf.Probe):
@@ -125,6 +139,7 @@ class RosBackend(seq.Backend):
         self._nav_cancel_pub = rospy.Publisher("/navigation/cancel", Empty, queue_size=1)
 
         from g1_navigation.srv import NavigateToObject
+        from handover.srv import ArmMonitor
         from perception.srv import GetObjectPosition
 
         self._navigate = rospy.ServiceProxy("/navigation/navigate", NavigateToObject)
@@ -134,12 +149,147 @@ class RosBackend(seq.Backend):
             name: rospy.ServiceProxy("/hand_%s/%s" % (side, name), Trigger)
             for name in ("pre_grasp", "grasp", "release")
         }
-        self._arm_handover = rospy.ServiceProxy("/auto_release_monitor/arm", Trigger)
-        self._disarm_handover = rospy.ServiceProxy("/auto_release_monitor/disarm", Trigger)
+        self._arm_monitor = rospy.ServiceProxy("/auto_release_monitor/arm", ArmMonitor)
+        self._disarm_monitor = rospy.ServiceProxy("/auto_release_monitor/disarm", Trigger)
 
     def _on_nav_status(self, msg):
         with self._nav_status_lock:
             self._nav_status = msg.data
+
+    # --- injected clock (the shared await_pull loop uses these) -----------------
+    def now(self):
+        return rospy.Time.now().to_sec()
+
+    def sleep(self, seconds):
+        rospy.sleep(float(seconds))
+
+    def aborted(self):
+        return rospy.is_shutdown()
+
+    # --- task-state steps ------------------------------------------------------
+    def require_held_object(self, ctx):
+        """Never invents a held object; a delivery cannot start without a grasp."""
+        validation = ctx.handover.require_held_object(ctx.side)
+        return seq.StepResult(validation.ok, validation.reason)
+
+    def record_held_object(self, ctx):
+        """The ONLY writer of held-object state."""
+        ctx.handover.begin(ctx.side, ctx.target or "object", release_authorized=True)
+        ctx.held_label = ctx.target or "object"
+        return seq.StepResult(
+            True, "recorded %r held in the %s hand" % (ctx.held_label, ctx.side))
+
+    def settle_handover(self, ctx):
+        delay = float(self.timeouts.get("handover_settle_sec", 1.0))
+        self.sleep(delay)
+        return seq.StepResult(True, "settled %.2fs after reaching the handover pose" % delay)
+
+    def settle_recipient(self, ctx):
+        delay = float(self.timeouts.get("recipient_settle_sec", 1.5))
+        self.sleep(delay)
+        return seq.StepResult(True, "waited %.2fs for the recipient to secure the object" % delay)
+
+    def arm_monitor(self, ctx):
+        """Create the session token, arm the monitor with it, then await the pull.
+
+        Order matters. The token is created here, the monitor must confirm it
+        stored that exact value, and only then does the task enter
+        AWAITING_PULL -- so there is no window in which a release could be
+        validated against a monitor that is not yet armed, and exactly one
+        token exists for the session.
+        """
+        token = hs.new_session_token()
+        # ARMING first, so a request arriving in the handshake window carries a
+        # token the task already knows and is QUEUED rather than lost.
+        ctx.handover.begin_arming(self.now(), token)
+        ctx.session_token = token
+        try:
+            response = self._arm_monitor(side=ctx.side, session_token=token)
+        except Exception as exc:  # noqa: BLE001 - arming must fail safe
+            ctx.handover.abandon("arm call raised")
+            return seq.StepResult(
+                False, "monitor arm call raised %s: %s; abandoned, no release possible"
+                % (type(exc).__name__, exc))
+        if not response.success:
+            # Abandon drops any queued event and clears the token, so nothing
+            # can be released against a monitor that is not armed.
+            ctx.handover.abandon("monitor refused to arm")
+            return seq.StepResult(False, "monitor refused to arm: %s" % response.message)
+        echoed = (getattr(response, "session_token", "") or "")
+        if echoed != token:
+            ctx.handover.abandon("token echo mismatch")
+            return seq.StepResult(
+                False,
+                "monitor echoed token %r but was given %r; abandoned rather than await a "
+                "pull it cannot identify" % (echoed, token))
+        ctx.handover.mark_awaiting_pull(self.now(), token)
+        return seq.StepResult(True, "monitor armed for the %s hand; AWAITING_PULL with "
+                                    "token %s" % (ctx.side, token))
+
+    def disarm_monitor(self, ctx):
+        response = self._disarm_monitor()
+        return seq.StepResult(bool(response.success), "monitor disarm: %s" % response.message)
+
+    def confirm_released(self, ctx):
+        """Interpret the release result per hand_control's ACTUAL contract.
+
+        hand_control's `release` preset sets neither require_settle nor
+        expect_contact, so a success means the open command was accepted -- not
+        that the fingers moved and not that the object transferred. So this
+        records RELEASE_COMMANDED, never a verified transfer.
+        """
+        if ctx.release_outcome == "ok":
+            # Only a command acknowledgement is available. hand_control exposes
+            # no settled flag and no feedback positions, and its release preset
+            # leaves require_settle absent, so success does not mean the fingers
+            # moved. mark_release_settled is deliberately NOT called from a
+            # configuration flag; see handover_state.
+            ctx.handover.mark_release_commanded()
+            return seq.StepResult(
+                True,
+                "release command ACKNOWLEDGED only. Not settling, not transfer: "
+                "hand_control's release preset sets neither require_settle nor "
+                "expect_contact, so a success response does not establish that the "
+                "fingers moved. Retraction stays refused; see retraction_allowed.")
+        ctx.handover.mark_release_uncertain(ctx.release_outcome)
+        return seq.StepResult(
+            False,
+            "release outcome UNCERTAIN (%s): the object may still be in the hand or "
+            "falling. Retraction is refused and a human must inspect."
+            % (ctx.release_outcome or "unknown",))
+
+    # --- steps blocked on configuration that does not exist --------------------
+    def plan_handover_pose(self, ctx):
+        return seq.StepResult(False, _MISSING_POSE % ("handover", "handover_pose"))
+
+    def execute_retract_home(self, ctx):
+        allowed, reason = ctx.handover.retraction_allowed()
+        if not allowed:
+            return seq.StepResult(False, reason)
+        moved = self._move_to_home(ctx)
+        if not moved.ok:
+            return moved
+        # End of delivery: close the task record only after the arm is home.
+        ctx.handover.mark_done()
+        return moved
+
+    def _move_to_home(self, ctx):
+        """Plan and execute the move to the home pose.
+
+        Blocked: no home pose exists anywhere in the repository. When
+        arm_planning publishes one this becomes plan_to_pose + move_arm_joints,
+        and the mark_done() above closes the delivery.
+        """
+        return seq.StepResult(False, _MISSING_POSE % ("home", "home_pose"))
+
+    def execute_stow(self, ctx):
+        return seq.StepResult(False, _MISSING_POSE % ("stow/carry", "stow_pose"))
+
+    def disarm_monitor_cleanup(self):
+        try:
+            self._disarm_monitor()
+        except Exception as exc:  # noqa: BLE001 - cleanup must never raise
+            rospy.logerr("[orchestrator] disarm_monitor_cleanup failed: %s", exc)
 
     # --- actions -----------------------------------------------------------------
     def await_localization(self, ctx):
@@ -222,7 +372,27 @@ class RosBackend(seq.Backend):
         return self._hand_call("grasp")
 
     def release_hand(self, ctx):
-        return self._hand_call("release")
+        """Send the open command. Interpretation is confirm_released's job.
+
+        Refuses unless a validated pull was consumed in this session, so a
+        resume cannot open the hand. A failure marks the outcome UNCERTAIN here
+        rather than relying on confirm_released, which fail-fast never reaches.
+        """
+        permitted, reason = ctx.handover.release_permitted()
+        if not permitted:
+            return seq.StepResult(False, reason)
+        try:
+            result = self._hand_call("release")
+        except Exception as exc:  # noqa: BLE001
+            ctx.release_outcome = "raised %s: %s" % (type(exc).__name__, exc)
+            ctx.handover.mark_release_uncertain(ctx.release_outcome)
+            return seq.StepResult(False, ctx.release_outcome, motion_issued=True)
+        if not result.ok:
+            ctx.release_outcome = result.detail
+            ctx.handover.mark_release_uncertain(result.detail)
+            return result
+        ctx.release_outcome = "ok"
+        return result
 
     def _hand_call(self, preset):
         response = self._hand[preset]()
@@ -231,14 +401,6 @@ class RosBackend(seq.Backend):
             "hand %s: %s" % (preset, response.message),
             motion_issued=True,
         )
-
-    def arm_handover(self, ctx):
-        response = self._arm_handover()
-        return seq.StepResult(bool(response.success), "handover arm: %s" % response.message)
-
-    def disarm_handover(self, ctx):
-        response = self._disarm_handover()
-        return seq.StepResult(bool(response.success), "handover disarm: %s" % response.message)
 
     # --- cleanup -----------------------------------------------------------------
     def cancel_navigation(self):
@@ -264,6 +426,12 @@ class OrchestratorNode:
             default_attempts=int(rospy.get_param("~default_attempts", 1)),
         )
         self.lock = ExecutionLock()
+        # Task-owned handover record. Deliberately NOT guarded by self.lock:
+        # see orchestrator/src/orchestrator/handover_state.py for why the
+        # release callback must not touch the execution lock.
+        self.handover = hs.HandoverState(
+            max_awaiting_sec=float(rospy.get_param("~max_awaiting_pull_sec", 120.0)),
+            require_event_token=bool(rospy.get_param("~require_event_token", True)))
         self.probe = RosProbe(float(rospy.get_param("~service_timeout_s", 1.0)))
         self.status_pub = rospy.Publisher("/orchestrator/status", String, queue_size=1, latch=True)
 
@@ -280,6 +448,46 @@ class OrchestratorNode:
         def handler(req):
             return self.run(route_name, req)
         return handler
+
+    def handle_release_request(self, req) -> RunRouteResponse:
+        """/orchestrator/run_auto_release: VALIDATE and RECORD, never actuate.
+
+        This callback deliberately does NOT acquire the execution lock and does
+        NOT run a route. A handover task already holds that lock while waiting
+        for the pull, so trying to run a route here would be refused by the very
+        task this request is meant to serve. Instead the validated event is
+        recorded against the active task, which consumes it under its existing
+        ownership. Nothing here opens a hand or moves an arm.
+        """
+        if req.route and req.route != "auto_release":
+            return RunRouteResponse(
+                success=False,
+                message="request route %r does not match this service's route "
+                        "'auto_release'" % (req.route,),
+                dry_run=True,
+            )
+
+        validation = self.handover.request_release(
+            rospy.Time.now().to_sec(), source="auto_release_monitor",
+            event_token=getattr(req, "event_token", "") or "")
+        snap = self.handover.snapshot()
+
+        if validation.ok:
+            rospy.logwarn("[orchestrator] %s", validation.reason)
+        else:
+            rospy.logwarn("[orchestrator] release request %s", validation.reason)
+
+        return RunRouteResponse(
+            success=validation.ok,
+            message=validation.reason,
+            blockers=[] if validation.ok else [validation.reason],
+            final_step="await_pull",
+            # This path issues no motion under any circumstances.
+            motion_issued=False,
+            dry_run=not snap.release_authorized,
+            object_state=snap.object_state,
+            transfer_verified=False,
+        )
 
     def run(self, route_name: str, req) -> RunRouteResponse:
         route = routes_mod.resolve_route(route_name)
@@ -321,7 +529,8 @@ class OrchestratorNode:
             # when hardware is absent, but report the blockers that a real run
             # would have refused on.
             backend = seq.DryRunBackend()
-            ctx = seq.RouteContext(route=route.name, target=req.target, side=self.side, dry_run=True)
+            ctx = seq.RouteContext(route=route.name, target=req.target, side=self.side,
+                                   dry_run=True, handover=self.handover)
             run = seq.run_route(route, backend, ctx, req.start_step, self.retry, blockers=[])
             message = "DRY RUN: %s" % run.message
             if blockers:
@@ -331,6 +540,7 @@ class OrchestratorNode:
                 steps_completed=run.steps_completed, steps_skipped=run.steps_skipped,
                 blockers=blockers, final_step=run.final_step,
                 motion_issued=False, dry_run=True,
+                object_state=self.handover.object_state, transfer_verified=False,
             )
             self.status_pub.publish(String(data="%s: dry run finished" % route.name))
             return response
@@ -346,6 +556,8 @@ class OrchestratorNode:
 
         try:
             backend = RosBackend(self.side, self.timeouts)
+            backend.await_pull_timeout_sec = float(
+                self.timeouts.get("await_pull_sec", 120.0))
         except Exception as exc:  # noqa: BLE001 - a missing srv module is a blocker
             rospy.logerr("[orchestrator] backend construction failed: %s", exc)
             return RunRouteResponse(
@@ -354,7 +566,8 @@ class OrchestratorNode:
                 blockers=["backend: %s" % exc], motion_issued=False, dry_run=False,
             )
 
-        ctx = seq.RouteContext(route=route.name, target=req.target, side=self.side, dry_run=False)
+        ctx = seq.RouteContext(route=route.name, target=req.target, side=self.side,
+                               dry_run=False, handover=self.handover)
         self.status_pub.publish(String(data="%s: RUNNING" % route.name))
         run = seq.run_route(route, backend, ctx, req.start_step, self.retry, blockers=[])
         self.status_pub.publish(
@@ -365,6 +578,9 @@ class OrchestratorNode:
             steps_completed=run.steps_completed, steps_skipped=run.steps_skipped,
             blockers=run.blockers, final_step=run.final_step,
             motion_issued=run.motion_issued, dry_run=False,
+            object_state=self.handover.object_state,
+            # Only a hand contract that actually establishes transfer may set this.
+            transfer_verified=False,
         )
 
 
@@ -375,9 +591,12 @@ def main() -> None:
         ("navigate_report", "/orchestrator/run_navigate_report"),
         ("grasp", "/orchestrator/run_grasp"),
         ("deliver", "/orchestrator/run_deliver"),
-        ("auto_release", "/orchestrator/run_auto_release"),
     ):
         rospy.Service(service, RunRoute, node.make_handler(route_name))
+
+    # Not a route: the monitor's request is validated and recorded for the task
+    # that already owns the execution lock. See handle_release_request.
+    rospy.Service("/orchestrator/run_auto_release", RunRoute, node.handle_release_request)
     rospy.loginfo("[orchestrator] routes up: %s", ", ".join(sorted(routes_mod.ROUTES)))
     rospy.spin()
 

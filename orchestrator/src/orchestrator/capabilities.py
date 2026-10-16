@@ -21,6 +21,13 @@ ARM_CONTROL = "arm_control"
 HAND = "hand"
 TACTILE_HANDOVER = "tactile_handover"
 FRAME_CONTRACT = "frame_contract"
+#: Poses and evidence a delivery needs. These are known missing at STARTUP, so
+#: they belong in preflight: discovering them at step time would mean finding
+#: out there is no home pose only after the hand has already opened.
+HANDOVER_POSE = "handover_pose"
+STOW_POSE = "stow_pose"
+HOME_POSE = "home_pose"
+RELEASE_COMPLETION = "release_completion"
 
 
 @dataclass(frozen=True)
@@ -87,21 +94,78 @@ CAPABILITIES = {
     ),
     TACTILE_HANDOVER: Capability(
         key=TACTILE_HANDOVER, owner="handover",
+        # /arm is handover/ArmMonitor (side + session_token); /disarm stays
+        # std_srvs/Trigger. Preflight only checks the names exist.
         services=("/auto_release_monitor/arm", "/auto_release_monitor/disarm"),
         ready_flags=("/auto_release_monitor/ready",),
+    ),
+    HANDOVER_POSE: Capability(
+        key=HANDOVER_POSE, owner="arm_planning",
+        unresolved=(
+            "no handover pose is defined anywhere in this repository. A search of "
+            "arm_planning/{config,scripts}, arm_control and hand_control/config for "
+            "home|rest|stow|neutral|park|tuck returns nothing, and the only "
+            "pose-defining config is grasp_geometry (7 grasp-relative keys) plus "
+            "training_workspace. arm_planning must publish a pose that is reachable, "
+            "inside the trained workspace, collision-free, and sensible to hand to a "
+            "person"
+        ),
+    ),
+    STOW_POSE: Capability(
+        key=STOW_POSE, owner="arm_planning",
+        unresolved=(
+            "no stow/carry pose is defined, so there is no validated posture for "
+            "walking while holding an object without swinging the arm into the body "
+            "or the environment"
+        ),
+    ),
+    HOME_POSE: Capability(
+        key=HOME_POSE, owner="arm_planning",
+        unresolved=(
+            "no home pose is defined. The only candidate is arm_control's "
+            "left_target/right_target = [0,0,0,0,0], which is a shared-memory "
+            "initialisation seed rather than a validated home, and reaching it needs a "
+            "collision-checked plan (Execute_Waypoint_Path does velocity limiting only). "
+            "The grasp retract path is not a substitute: it starts at the lift pose and "
+            "inherits y and z from the grasped object"
+        ),
+    ),
+    RELEASE_COMPLETION: Capability(
+        key=RELEASE_COMPLETION, owner="hand_control",
+        unresolved=(
+            "the hand service cannot establish that a release physically completed. "
+            "/hand_{side}/release returns only success and a human-readable message; "
+            "revo_hand_link.wait_until_settled does poll fresh read_positions() against "
+            "the target within settle_tolerance (deadline settle_timeout_s), but the "
+            "result is not exposed, the release preset leaves require_settle absent so "
+            "it defaults false, and _execute therefore does not fail on a settling "
+            "timeout -- it returns success with 'release commanded, did not settle'. "
+            "Until hand_control exposes settling (a structured flag, or the feedback "
+            "positions), retraction after a release stays refused. Object transfer "
+            "remains separately unverifiable either way"
+        ),
     ),
     FRAME_CONTRACT: Capability(
         key=FRAME_CONTRACT, owner="navigation + arm_planning",
         unresolved=(
-            "the perception -> arm_planning frame contract is unresolved. perception "
-            "reports object positions in base_link (documented as pelvis at zero waist "
-            "yaw), arm_planning takes torso_link (doc 2.3, 13.4), slam refuses to "
-            "publish pelvis -> base_link at all (g1_tf.yaml base_link_alias is empty, "
-            "marked UNRESOLVED pending the navigation team), and the two vendored URDFs "
-            "place torso_link 10 mm apart (slam waist_yaw_joint z=0.044 vs arm_planning "
-            "z=0.054) which is the size of arm_planning's own 0.01 m tolerance. "
-            "Converting a perception point into a planner target would be a guess, so "
-            "no route that needs it can run"
+            "the perception -> arm_planning frame conversion is not implemented. "
+            "Navigation's half IS settled (docs/FRAME_CONTRACT.md): base_link is an "
+            "identity alias of pelvis at EVERY waist angle -- the pelvis is the "
+            "waist's parent, so it never rotates with the waist -- published once by "
+            "system_bringup with with_base_link on by default. Two things still block "
+            "a real run. (1) The two vendored URDFs place torso_link 10 mm apart (slam "
+            "waist_yaw_joint z=0.044 vs arm_planning z=0.054), the size of "
+            "arm_planning's own 0.01 m tolerance. That may be two different DEFINITIONS "
+            "of the frame rather than a wrong URDF, so the TF torso_link must be shown "
+            "to match the planner's convention before a target is routed through it; "
+            "run tools/check_urdf_agreement.py. (2) Nobody has implemented the "
+            "conversion: it is one TF lookup, torso_link <- base_link, which carries "
+            "the live waist yaw, and it belongs in arm_planning, not here. "
+            "perception's camera extrinsics are a SEPARATE requirement: they are "
+            "hard-coded for a torso-mounted D435 that DOES rotate with the waist, so "
+            "perception's output is only valid near zero waist yaw regardless of how "
+            "base_link is defined. The zero-waist limitation belongs to those "
+            "extrinsics, never to base_link"
         ),
     ),
 }

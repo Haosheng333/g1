@@ -9,6 +9,7 @@ import rospy
 from geometry_msgs.msg import PoseStamped
 from tf.transformations import quaternion_from_euler
 
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E402
 from nav_client import StatusWatcher
 
 WAYPOINTS = [

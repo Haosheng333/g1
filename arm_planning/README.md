@@ -69,15 +69,24 @@ The gripper steps belong **between** segments and are the orchestrator's
 `target_pose` and `object_xyz` are **`torso_link`** coordinates (doc 2.3,
 13.4). This node performs **no frame conversion**, deliberately:
 
-* `perception` reports object positions in `base_link`, which it documents as
-  `pelvis` at zero waist yaw (`m1_perception.py`).
-* `slam` refuses to publish `pelvis -> base_link` at all
-  (`slam/config/g1_tf.yaml`: `base_link_alias: ""`, marked UNRESOLVED pending
-  the navigation team).
+* `perception` reports object positions in `base_link`. That frame is
+  **settled** (`docs/FRAME_CONTRACT.md`): `base_link` is an identity alias of
+  `pelvis` at **every** waist angle — the pelvis is the waist's *parent*, so it
+  never rotates with the waist — published once by `system_bringup`
+  (`with_base_link`, on by default). `slam/config/g1_tf.yaml`'s
+  `base_link_alias: ""` is not a refusal; it keeps `base_link` to exactly one
+  publisher.
 * The two vendored URDFs disagree on where `torso_link` sits by **10 mm**
   (`slam/urdf/g1_23dof_mode_10.urdf` has `waist_yaw_joint` at z=0.044,
   `arm_planning/urdf/g1_23dof.urdf` at z=0.054), which is the same order as
-  this planner's own 0.01 m position tolerance.
+  this planner's own 0.01 m position tolerance. That may be two different
+  *definitions* of the frame rather than a wrong file, so the TF `torso_link`
+  must be shown to match this planner's convention before a target is routed
+  through it (`tools/check_urdf_agreement.py`).
+* Separately, `perception`'s camera extrinsics are **hard-coded** for a
+  torso-mounted D435 that *does* rotate with the waist, so a perception point
+  is only valid near zero waist yaw regardless of how `base_link` is defined.
+  The zero-waist limitation belongs to those extrinsics, not to `base_link`.
 
 So a perception point cannot yet be converted into a planner target without
 guessing. Callers must supply `torso_link` coordinates themselves, and the

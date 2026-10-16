@@ -23,6 +23,8 @@ jobs:
         run: >-
           python -m compileall -q slam navigation tools
           arm_planning/src arm_planning/scripts arm_planning/test
+          perception/src perception/scripts perception/test
+          arm_control/src arm_control/scripts arm_control/test
           handover/src handover/scripts handover/test
           orchestrator/src orchestrator/scripts orchestrator/test
       - name: Launch files and package manifests are well-formed XML
@@ -48,18 +50,23 @@ jobs:
         run: PYTHONPATH=src python -m unittest discover -s test -p "test_*.py" -v
       - name: navigation tests (state machine, costmap, planner, DWA, sim room acceptance)
         working-directory: navigation/test
-        run: python -m unittest test_navigation_node test_costmap_planner_dwa test_sim_room test_robustness test_launch_files test_slam_nav_contract test_joint_bridge_table test_section_e -v
+        run: python -m unittest test_navigation_node test_costmap_planner_dwa test_sim_room test_robustness test_launch_files test_slam_nav_contract test_joint_bridge_table test_section_e test_section_g test_locomotion_bridge test_section_f test_frame_contract -v
       - name: arm_planning tests (request validation, flattening, joint order, asset paths)
         working-directory: arm_planning
         run: python -m unittest discover -s test -v
 
-      - name: handover tests (release state machine, tactile adapter, node contract)
+      - name: handover tests (detector, tactile adapter, detection-only, node contract)
         working-directory: handover
         run: python -m unittest discover -s test -v
 
-      - name: orchestrator tests (routes, preflight, saw_active guard, dry-run safety)
+      - name: orchestrator tests (routes, preflight, saw_active guard, release ownership)
         working-directory: orchestrator/test
         run: python -m unittest discover -s . -v
+
+      - name: perception / arm_control import without their optional heavy deps
+        run: |
+          cd perception   && python -m unittest discover -s test -p "test_lazy_import.py" -v && cd ..
+          cd arm_control  && python -m unittest discover -s test -p "test_lazy_import.py" -v && cd ..
 
       - name: sim map generator is reproducible
         run: |

@@ -1,28 +1,50 @@
 <launch>
-  <!-- Auto-release handover monitor (detection only; it actuates nothing).
+  <!-- Tactile handover monitor: detects a human taking the held object.
 
-         /auto_release_monitor/arm      std_srvs/Trigger
-         /auto_release_monitor/disarm   std_srvs/Trigger
-         /auto_release_monitor/state    std_msgs/String  (latched)
-         /auto_release_monitor/ready    std_msgs/Bool    (latched)
+         /auto_release_monitor/arm             handover/ArmMonitor  (side + session_token)
+         /auto_release_monitor/disarm          std_srvs/Trigger
+         /auto_release_monitor/<side>/arm      handover/ArmMonitor
+         /auto_release_monitor/<side>/disarm   std_srvs/Trigger
+         /auto_release_monitor/state           std_msgs/String (latched)
+         /auto_release_monitor/ready           std_msgs/Bool   (latched)
+         /auto_release_monitor/event           std_msgs/String  candidate/confirmed/fault
 
-       On a verified detection it calls /orchestrator/run_auto_release once.
-       It never calls a hand or arm service itself.
+       One node per hand, like hand_control. DETECTION-ONLY BY DEFAULT: with
+       release_integration:=false the node builds no release client at all, so
+       it cannot open the hand and cannot ask the orchestrator to. Calibrate in
+       this mode, then enable integration.
 
-       OUT OF THE BOX THIS NODE IS NOT_READY, by design: the tactile adapter is
-       disabled and release_delta/direction are unset, because no tactile topic
-       exists in this workspace yet and those magnitudes have not been measured.
-       Arming is refused with the exact list of what is missing. See
-       config/auto_release.yaml.
+       It never opens the hand and never moves the arm in either mode. A
+       verified pull becomes one request to /orchestrator/run_auto_release,
+       which only validates and records the event for the task that owns the
+       execution lock.
 
-       roslaunch handover auto_release_monitor.launch
+       OUT OF THE BOX THIS IS NOT_READY: the tactile schema is unconfirmed and
+       the thresholds are uncalibrated. Arming is refused with the exact list.
+       See handover/README.md.
+
+       The orchestrator creates the session token and sends it with the arm
+       request; this node echoes that same value in its release request and
+       never generates one. Arming without a token is refused.
+
+       roslaunch handover auto_release_monitor.launch side:=right
        rostopic echo -n1 /auto_release_monitor/ready
-  -->
-  <arg name="config" default="$(find handover)/config/auto_release.yaml"/>
-  <arg name="rate" default="20.0"/>
+       rostopic echo /auto_release_monitor/event
 
-  <node pkg="handover" type="auto_release_monitor.py" name="auto_release_monitor" output="screen">
+       Running BOTH hands: the legacy unqualified service names would collide,
+       so start the second node with advertise_legacy:=false once that argument
+       is needed; today each node advertises both for backward compatibility.
+  -->
+  <arg name="side" default="right"/>
+  <arg name="config" default="$(find handover)/config/auto_release.yaml"/>
+  <arg name="release_integration" default="false"/>
+  <arg name="rate" default="30.0"/>
+
+  <node pkg="handover" type="auto_release_monitor.py" name="auto_release_monitor_$(arg side)"
+        output="screen">
     <rosparam command="load" file="$(arg config)"/>
+    <param name="side" value="$(arg side)"/>
+    <param name="release_integration" type="bool" value="$(arg release_integration)"/>
     <param name="rate" value="$(arg rate)"/>
   </node>
 </launch>

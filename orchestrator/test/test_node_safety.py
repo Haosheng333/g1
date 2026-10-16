@@ -27,6 +27,7 @@ class RunRouteResponse(object):
     _defaults = {
         "success": False, "message": "", "steps_completed": [], "steps_skipped": [],
         "blockers": [], "final_step": "", "motion_issued": False, "dry_run": False,
+        "object_state": "NONE", "transfer_verified": False,
     }
 
     def __init__(self, **kw):
@@ -51,9 +52,11 @@ def _install_stubs():
     rospy.Service = lambda *a, **k: None
     rospy.Subscriber = lambda *a, **k: None
     rospy.Publisher = lambda *a, **k: types.SimpleNamespace(publish=lambda *_a, **_k: None)
-    rospy.ServiceProxy = lambda *a, **k: (_ for _ in ()).throw(
-        AssertionError("a dry run must not construct a ServiceProxy")
-    )
+    def _raising_proxy(*a, **k):
+        raise AssertionError(
+            "this test must not construct a ServiceProxy (%r)" % (a,))
+    rospy.ServiceProxy = _raising_proxy
+    rospy._raising_proxy = _raising_proxy
     rospy.wait_for_service = lambda *a, **k: None
     rospy.wait_for_message = lambda *a, **k: None
     rospy.is_shutdown = lambda: False
@@ -98,22 +101,40 @@ ROSPY = _install_stubs()
 
 import orchestrator_node as on  # noqa: E402
 
+
+class StubbedRospy(unittest.TestCase):
+    """Re-assert THIS module's rospy stub.
+
+    Sibling test files install their own rospy stub at import time, and whichever
+    is imported last wins for the whole process. So every test here reinstates
+    the stub it needs instead of trusting module import order.
+    """
+
+    def setUp(self):
+        self._saved = sys.modules.get("rospy")
+        sys.modules["rospy"] = ROSPY
+        on.rospy = ROSPY
+        ROSPY.ServiceProxy = ROSPY._raising_proxy
+
+    def tearDown(self):
+        on.pf.run_preflight = ORIGINAL_RUN_PREFLIGHT
+        if self._saved is not None:
+            sys.modules["rospy"] = self._saved
+
 from orchestrator import routes as r  # noqa: E402
 
 #: Captured BEFORE any test patches it, so restoring cannot resurrect a stub.
 ORIGINAL_RUN_PREFLIGHT = on.pf.run_preflight
 
 
-class PreflightPatch(unittest.TestCase):
-    """Base class that always puts the real preflight back."""
-
-    def tearDown(self):
-        on.pf.run_preflight = ORIGINAL_RUN_PREFLIGHT
+class PreflightPatch(StubbedRospy):
+    """Base class that restores both the rospy stub and the real preflight."""
 
 
-def request(route="", target="table", start_step="", dry_run=False):
+def request(route="", target="table", start_step="", dry_run=False, event_token=""):
     return types.SimpleNamespace(
-        route=route, target=target, start_step=start_step, dry_run=dry_run
+        route=route, target=target, start_step=start_step, dry_run=dry_run,
+        event_token=event_token,
     )
 
 
@@ -158,7 +179,7 @@ class DryRunIsTheDefault(PreflightPatch):
             line = line.split("#")[0].strip()
             if line:
                 names.append(line.split()[1])
-        self.assertEqual(names, ["route", "target", "start_step", "dry_run"])
+        self.assertEqual(names, ["route", "target", "start_step", "dry_run", "event_token"])
         for forbidden in ("force", "enable_motion", "allow_motion", "execute"):
             self.assertNotIn(forbidden, names)
 

@@ -43,6 +43,16 @@ class RouteContext:
     #: Filled by plan_grasp: segment name -> flat path + count.
     plan: dict = field(default_factory=dict)
     notes: list = field(default_factory=list)
+    #: The task record (orchestrator.handover_state.HandoverState). The route
+    #: reads and writes it; the release service callback only writes pending
+    #: events into it. None in routes that do not touch handover state.
+    handover: object = None
+    #: Session token issued by mark_awaiting_pull, quoted by a release request.
+    session_token: str = ""
+    #: Label/side of the object a grasp recorded, for a later delivery.
+    held_label: str = ""
+    #: Set by confirm_released: what the service result actually established.
+    release_outcome: str = ""
 
 
 @dataclass
@@ -69,9 +79,91 @@ class RetryPolicy:
 
 
 class Backend(object):
-    """Every action a route can dispatch. Subclasses implement them."""
+    """Every action a route can dispatch. Subclasses implement them.
+
+    `now()` and `sleep()` are the injected clock. `await_pull` is implemented
+    HERE rather than per backend, so the production polling loop is the same
+    code the integration tests drive with a fake clock.
+    """
+
+    #: Seconds to wait for a validated pull before giving up.
+    await_pull_timeout_sec = 120.0
+    #: Poll interval while waiting.
+    await_pull_poll_sec = 0.05
+
+    # --- injected clock ---------------------------------------------------------
+    def now(self) -> float:
+        raise NotImplementedError
+
+    def sleep(self, seconds: float) -> None:
+        raise NotImplementedError
+
+    def aborted(self) -> bool:
+        """True when the route has been cancelled and should stop waiting."""
+        return False
+
+    # --- shared: consume the validated event while we own the lock -------------
+    def await_pull(self, ctx):
+        """Block until the task record yields a validated pull, or time out.
+
+        This runs INSIDE the route, which holds the execution lock, so the
+        release service callback never needs it. A timeout or a cancel returns
+        failure and performs NO release: the caller's cleanup disarms the
+        monitor and the object stays held.
+        """
+        if ctx.handover is None:
+            return StepResult(False, "await_pull has no task record to consume from")
+        started = self.now()
+        deadline = started + float(self.await_pull_timeout_sec)
+        while True:
+            if self.aborted():
+                return StepResult(
+                    False, "CANCELLED while awaiting a pull after %.1fs; no release issued"
+                    % (self.now() - started))
+            event = ctx.handover.consume_pending(self.now())
+            if event is not None:
+                return StepResult(
+                    True,
+                    "consumed validated pull event %d (session %d, token %r) after %.1fs"
+                    % (event.sequence, event.session, event.event_token,
+                       self.now() - started))
+            if self.now() >= deadline:
+                return StepResult(
+                    False, "TIMEOUT: no validated pull within %.1fs; no release issued"
+                    % (float(self.await_pull_timeout_sec),))
+            self.sleep(float(self.await_pull_poll_sec))
 
     #: Actions that only ever inspect state; never retried differently.
+    def require_held_object(self, ctx):
+        raise NotImplementedError
+
+    def record_held_object(self, ctx):
+        raise NotImplementedError
+
+    def plan_handover_pose(self, ctx):
+        raise NotImplementedError
+
+    def settle_handover(self, ctx):
+        raise NotImplementedError
+
+    def settle_recipient(self, ctx):
+        raise NotImplementedError
+
+    def arm_monitor(self, ctx):
+        raise NotImplementedError
+
+    def disarm_monitor(self, ctx):
+        raise NotImplementedError
+
+    def confirm_released(self, ctx):
+        raise NotImplementedError
+
+    def execute_retract_home(self, ctx):
+        raise NotImplementedError
+
+    def execute_stow(self, ctx):
+        raise NotImplementedError
+
     def await_localization(self, ctx):
         raise NotImplementedError
 
@@ -105,17 +197,15 @@ class Backend(object):
     def release_hand(self, ctx):
         raise NotImplementedError
 
-    def arm_handover(self, ctx):
-        raise NotImplementedError
-
-    def disarm_handover(self, ctx):
-        raise NotImplementedError
-
     # --- cleanup, always called -----------------------------------------------------
     def cancel_navigation(self):
         raise NotImplementedError
 
     def disable_motion(self):
+        raise NotImplementedError
+
+    def disarm_monitor_cleanup(self):
+        """Always called: a route must never exit leaving the detector armed."""
         raise NotImplementedError
 
 
@@ -129,6 +219,19 @@ class DryRunBackend(Backend):
     def __init__(self):
         self.calls = []
         self.cleanup = []
+        self._t = 0.0
+
+    # A dry run needs no real clock and must never block.
+    def now(self):
+        self._t += 0.01
+        return self._t
+
+    def sleep(self, seconds):
+        self._t += float(seconds)
+
+    def await_pull(self, ctx):
+        # Overridden: a dry run must traverse this step, not wait for a human.
+        return self._record("await_pull", "dry run: no pull awaited, no event consumed")
 
     def _record(self, action, detail=""):
         self.calls.append(action)
@@ -170,17 +273,44 @@ class DryRunBackend(Backend):
     def release_hand(self, ctx):
         return self._record("release_hand")
 
-    def arm_handover(self, ctx):
-        return self._record("arm_handover")
+    def require_held_object(self, ctx):
+        return self._record("require_held_object", "dry run: held-object check skipped")
 
-    def disarm_handover(self, ctx):
-        return self._record("disarm_handover")
+    def record_held_object(self, ctx):
+        return self._record("record_held_object", "dry run: no state written")
+
+    def plan_handover_pose(self, ctx):
+        return self._record("plan_handover_pose", "dry run: no plan requested")
+
+    def settle_handover(self, ctx):
+        return self._record("settle_handover", "dry run: not waited")
+
+    def settle_recipient(self, ctx):
+        return self._record("settle_recipient", "dry run: not waited")
+
+    def arm_monitor(self, ctx):
+        return self._record("arm_monitor", "dry run: monitor NOT armed")
+
+    def disarm_monitor(self, ctx):
+        return self._record("disarm_monitor")
+
+    def confirm_released(self, ctx):
+        return self._record("confirm_released", "dry run: nothing to confirm")
+
+    def execute_retract_home(self, ctx):
+        return self._record("execute_retract_home", "dry run: arm NOT moved")
+
+    def execute_stow(self, ctx):
+        return self._record("execute_stow", "dry run: arm NOT moved")
 
     def cancel_navigation(self):
         self.cleanup.append("cancel_navigation")
 
     def disable_motion(self):
         self.cleanup.append("disable_motion")
+
+    def disarm_monitor_cleanup(self):
+        self.cleanup.append("disarm_monitor_cleanup")
 
 
 def _dispatch(backend: Backend, step, ctx) -> StepResult:
@@ -265,6 +395,9 @@ def run_route(route, backend: Backend, ctx: RouteContext, start_step: str = "",
             dry_run=ctx.dry_run,
         )
     finally:
-        # Unconditional: success, failure, exception or early return.
+        # Unconditional: success, failure, exception or early return. A route
+        # must never exit leaving navigation chasing a goal, the motion gate
+        # open, or the tactile detector armed.
         backend.cancel_navigation()
         backend.disable_motion()
+        backend.disarm_monitor_cleanup()

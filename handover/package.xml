@@ -15,9 +15,15 @@
 
   <buildtool_depend>catkin</buildtool_depend>
 
+  <build_depend>message_generation</build_depend>
+  <exec_depend>message_runtime</exec_depend>
+
   <depend>rospy</depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
+
+  <!-- yaml is read only by test/test_tactile_adapter.py, not at runtime. -->
+  <test_depend>python3-yaml</test_depend>
 
   <!-- orchestrator/RunRoute is imported lazily at trigger time only, so the
        node still starts when the orchestrator package is not built. -->

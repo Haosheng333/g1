@@ -92,7 +92,7 @@ GRASP = Route(
     description="Navigate to the object, plan the full grasp, then execute it segment by segment",
     requires=(caps.LOCALIZATION, caps.MAP, caps.JOINT_STATES, caps.NAVIGATION,
               caps.MOTION_GATE, caps.PERCEPTION, caps.ARM_PLANNING, caps.ARM_CONTROL,
-              caps.HAND, caps.FRAME_CONTRACT),
+              caps.HAND, caps.FRAME_CONTRACT, caps.STOW_POSE),
     steps=(
         Step("await_localization", "await_localization", caps.LOCALIZATION),
         Step("enable_motion", "enable_motion", caps.MOTION_GATE, motion=True),
@@ -110,51 +110,73 @@ GRASP = Route(
         Step("close_gripper", "close_gripper", caps.HAND, motion=True),
         Step("execute_lift", "execute_segment", caps.ARM_CONTROL, motion=True),
         Step("execute_retract", "execute_segment", caps.ARM_CONTROL, motion=True),
+        Step("record_held_object", "record_held_object",
+             description="the ONLY writer of held-object state; a delivery reads it"),
+        Step("execute_stow", "execute_stow", caps.ARM_CONTROL, motion=True,
+             description="bring the arm to the carry pose before walking"),
     ),
 )
 
 
-# --- deliver: carry the object to a waypoint and arm the handover monitor ------------
+# --- deliver: the full handover sequence --------------------------------------------
 #
-# No arm pose is commanded here. Moving the arm to a "present" pose would need a
-# pose constant that nobody has specified, so this route deliberately stops at
-# navigation plus arming the monitor.
+# Framework section C/E order, with the gripper and settle points where the
+# framework puts them. Every step is explicit so the sequencer can fail at a
+# named place and so resume can refuse at the right one.
+#
+# `require_held_object` is first on purpose: a delivery may never start, or
+# resume, without a grasp having recorded a held object. `arm_monitor` comes
+# strictly after `execute_handover_pose` and `settle_handover`, so the detector
+# is never armed while the arm is moving. `await_pull` consumes the validated
+# event while this route holds the execution lock.
 
 DELIVER = Route(
     name="deliver",
-    description="Carry the held object to a mapped waypoint and arm the handover monitor",
+    description="Carry the held object to a waypoint, hand it over on a verified pull, retract",
+    # Every known requirement is declared here so preflight refuses the whole
+    # route up front. Discovering a missing home pose at execute_retract_home
+    # would mean finding out AFTER the hand has opened.
     requires=(caps.LOCALIZATION, caps.MAP, caps.JOINT_STATES, caps.NAVIGATION,
-              caps.MOTION_GATE, caps.TACTILE_HANDOVER),
+              caps.MOTION_GATE, caps.ARM_PLANNING, caps.ARM_CONTROL, caps.HAND,
+              caps.TACTILE_HANDOVER, caps.FRAME_CONTRACT,
+              caps.HANDOVER_POSE, caps.RELEASE_COMPLETION, caps.HOME_POSE),
     steps=(
+        Step("require_held_object", "require_held_object",
+             description="refuse unless a grasp recorded a held object; never invent one"),
         Step("await_localization", "await_localization", caps.LOCALIZATION),
         Step("enable_motion", "enable_motion", caps.MOTION_GATE, motion=True),
         Step("navigate", "navigate", caps.NAVIGATION, motion=True,
-             description="drive to the delivery waypoint"),
-        Step("arm_handover", "arm_handover", caps.TACTILE_HANDOVER,
-             description="arm /auto_release_monitor; it detects, it does not actuate"),
+             description="drive to the delivery waypoint, hand still closed"),
+        Step("plan_handover_pose", "plan_handover_pose", caps.ARM_PLANNING,
+             description="plan the whole move to the handover pose BEFORE any arm motion"),
+        Step("execute_handover_pose", "execute_segment", caps.ARM_CONTROL, motion=True),
+        Step("settle_handover", "settle_handover",
+             description="wait out the arm's deceleration before arming the detector"),
+        Step("arm_monitor", "arm_monitor", caps.TACTILE_HANDOVER,
+             description="only now: AWAITING_PULL, and a fresh session token is issued"),
+        Step("await_pull", "await_pull", caps.TACTILE_HANDOVER,
+             description="consume the validated event while holding the execution lock"),
+        Step("disarm_monitor", "disarm_monitor", caps.TACTILE_HANDOVER,
+             description="disarm BEFORE releasing, per the framework order"),
+        Step("release_hand", "release_hand", caps.HAND, motion=True),
+        Step("confirm_released", "confirm_released", caps.HAND,
+             description="interpret the service result; success is a command ack, not transfer"),
+        Step("settle_recipient", "settle_recipient",
+             description="let the recipient secure the object before the arm moves"),
+        Step("execute_retract_home", "execute_retract_home", caps.ARM_CONTROL, motion=True,
+             description="refused while the release outcome is UNCERTAIN"),
     ),
 )
 
 
-# --- auto_release: what the handover monitor asks for -------------------------------
-#
-# Opening the hand and disarming only. A retract would need a planned path to a
-# pose nobody has specified, so it is not invented here.
-
-AUTO_RELEASE = Route(
-    name="auto_release",
-    description="Open the hand after the handover monitor verified a release, then disarm",
-    requires=(caps.HAND, caps.TACTILE_HANDOVER),
-    steps=(
-        Step("release_hand", "release_hand", caps.HAND, motion=True,
-             description="open the fingers to let go"),
-        Step("disarm_handover", "disarm_handover", caps.TACTILE_HANDOVER,
-             description="return the monitor to IDLE"),
-    ),
-)
+# The former `auto_release` route is deleted. Its two steps now live inside
+# `deliver` (`disarm_monitor` then `release_hand`, the framework's order -- the
+# old route had them reversed), so there is exactly one motion path and no
+# route that can open the hand on its own. /orchestrator/run_auto_release is
+# bound to the validation callback, which records an event and moves nothing.
 
 
-ROUTES = {r.name: r for r in (NAVIGATE_REPORT, GRASP, DELIVER, AUTO_RELEASE)}
+ROUTES = {r.name: r for r in (NAVIGATE_REPORT, GRASP, DELIVER)}
 
 
 def resolve_route(name: str) -> Route:
