@@ -383,12 +383,13 @@ class NavigationNode:
         if target is None:
             self._finish(goal, FAILURE, why)
             return
-        path = self.planner.plan(cm, (pose[0], pose[1]), (target[0], target[1]))
+        path = self.planner.plan(cm, (pose[0], pose[1]), (target[0], target[1]), goal_yaw=target[2])
         if not path:
             self._recover(goal, now, "planner found no path (%s)" % self.planner.last_info.get("reason", ""))
             return
         path[-1] = (target[0], target[1])        # end exactly on the goal, not the cell centre
         goal["path"], goal["target"] = path, target
+        goal["approach_from"] = self.planner.last_info.get("approach_from")
         goal["progress"] = (now, pose[0], pose[1], pose[2])
         goal["blocked_since"] = None
         goal["spec_since"] = None
@@ -399,7 +400,7 @@ class NavigationNode:
                       target[0], target[1], "any" if target[2] is None else "%.2f" % target[2])
         self._set_status_if_changed(FOLLOWING)
 
-    def _path_blocked(self, cm, path, pose):
+    def _path_blocked(self, cm, path, pose, goal=None):
         """True if the next `path_check_distance` metres of path (beyond 0.4 m) are no longer traversable."""
         arr = np.asarray(path, dtype=np.float64)
         i = int(np.argmin(np.hypot(arr[:, 0] - pose[0], arr[:, 1] - pose[1])))
@@ -412,6 +413,11 @@ class NavigationNode:
             if math.hypot(arr[j, 0] - pose[0], arr[j, 1] - pose[1]) < 0.4:
                 continue
             if not cm.is_free(*cm.world_to_map(arr[j, 0], arr[j, 1])):
+                if (goal is not None and goal.get("approach_from") is not None
+                        and math.hypot(arr[j, 0] - arr[-1, 0], arr[j, 1] - arr[-1, 1])
+                        <= self.planner.cfg["goal_snap"] + cm.resolution
+                        and self.planner.goal_pose_ok(cm, goal["target"][:2], goal["target"][2])):
+                    continue                     # the planned close-approach tail: checked by footprint instead
                 return True
         return False
 
@@ -422,7 +428,7 @@ class NavigationNode:
             self._stop()
             return
         # live obstacle appeared on the path: re-plan (rate-limited)
-        if now - goal["last_plan"] > self.replan_min_interval and self._path_blocked(cm, goal["path"], pose):
+        if now - goal["last_plan"] > self.replan_min_interval and self._path_blocked(cm, goal["path"], pose, goal):
             rospy.logwarn("[navigation_node] path blocked by a new obstacle: re-planning")
             goal["path"] = None
             self._stop()

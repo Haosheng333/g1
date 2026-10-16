@@ -35,6 +35,7 @@ catkin_install_python(PROGRAMS
   scripts/send_goal_node.py
   scripts/send_waypoints_node.py
   scripts/nav_client.py
+  scripts/approach_forward.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

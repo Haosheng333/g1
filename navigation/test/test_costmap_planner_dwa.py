@@ -86,11 +86,11 @@ class CostmapTests(unittest.TestCase):
 
     def test_footprint_is_five_circles(self):
         self.assertEqual(len(self.cm.circle_y), 5)
-        self.assertAlmostEqual(float(self.cm.circle_y[0]), -0.20)
+        self.assertAlmostEqual(float(self.cm.circle_y[0]), -0.15)
         self.assertEqual(self.cm.cfg["circle_radius"], 0.10)
 
     def test_footprint_depends_on_heading(self):
-        # in the 1.0 m door: lateral reach 0.30 m fits when facing the door, the wide side is also free
+        # in the 1.0 m door: lateral reach 0.25 m fits when facing the door, the wide side is also free
         c0 = self.cm.footprint_clearance(5.0, 4.0, 0.0)
         c90 = self.cm.footprint_clearance(5.0, 4.0, math.pi / 2)
         self.assertGreater(c0, 0.0)
@@ -158,6 +158,50 @@ class PlannerTests(unittest.TestCase):
     def test_blocked_start_is_snapped(self):
         p = self.pl.plan(self.cm, (0.32, 1.0), (4.0, 1.0))  # 0.32 m from the wall: inside the blocked band
         self.assertGreater(len(p), 5)
+
+
+class CloseApproachTests(unittest.TestCase):
+    """A standing pose close to a table CORNER (off-axis, like a real recorded waypoint) fails the round
+    point-robot clearance (0.255 m < 0.30 m) but must be reachable when the robot faces along the table,
+    because the footprint is only 0.10 m deep.  The same spot turned sideways overlaps the corner and
+    must stay rejected."""
+
+    def setUp(self):
+        g = np.zeros((120, 120), np.int8)
+        g[0, :] = g[-1, :] = g[:, 0] = g[:, -1] = OBSTACLE
+        g[64:80, 64:80] = OBSTACLE                  # table x, y in 3.2 .. 4.0, corner at (3.2, 3.2)
+        self.cm = Costmap.from_grid(gu.compose_tiers(g, RES), RES)
+        self.goal = (2.99, 3.195)                   # footprint clearance ~+0.09 facing +x, < 0 sideways
+        self.pl = AStarPlanner()
+
+    def test_point_robot_rule_rejects_without_heading(self):
+        self.assertFalse(self.cm.is_free(*self.cm.world_to_map(*self.goal)))
+        self.assertEqual(self.pl.plan(self.cm, (1.0, 1.0), self.goal), [])
+
+    def test_facing_the_table_is_planned_and_ends_exactly_on_the_goal(self):
+        path = self.pl.plan(self.cm, (1.0, 1.0), self.goal, goal_yaw=0.0)
+        self.assertTrue(path)
+        self.assertAlmostEqual(path[-1][0], self.goal[0])
+        self.assertAlmostEqual(path[-1][1], self.goal[1])
+        self.assertIsNotNone(self.pl.last_info.get("approach_from"))
+
+    def test_sideways_to_the_table_is_still_rejected(self):
+        self.assertEqual(self.pl.plan(self.cm, (1.0, 1.0), self.goal, goal_yaw=math.pi / 2), [])
+
+    def test_dwa_drives_there_without_touching(self):
+        path = self.pl.plan(self.cm, (1.0, 1.0), self.goal, goal_yaw=0.0)
+        sim = Sim(self.cm, (1.0, 1.0, 0.0))
+        t, ok = 0.0, False
+        while t < 60.0:
+            r = sim.dwa.compute(tuple(sim.pose), sim.cmd, path, self.goal, 0.0, self.cm)
+            if r.reached:
+                ok = True
+                break
+            sim.cmd = (0.0, 0.0, 0.0) if r.blocked else (r.vx, r.vy, r.wz)
+            sim.step(*sim.cmd)
+            t += sim.dt
+        self.assertTrue(ok)
+        self.assertGreaterEqual(sim.min_clear, self.cm.cfg["collision_margin"] - 1e-6)
 
 
 class DwaTests(unittest.TestCase):

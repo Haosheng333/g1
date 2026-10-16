@@ -4,7 +4,7 @@
 
 Random furnished rooms, closed loop with first-order velocity lag; collisions are judged against the
 GROUND-TRUTH occupancy (not the planner's costmap).  Pins the review fixes: bilinear distance
-sampling, half-cell surface offset, path-following cost, 0.35 m planner clearance.
+sampling, half-cell surface offset, path-following cost, 0.30 m planner clearance.
 """
 import math
 import os

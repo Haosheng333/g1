@@ -124,7 +124,10 @@ class Recorder(object):
         created = str(data.get("created_at", "")).strip()
         if not name:
             raise rospy.ROSInitException("%s has no map_name" % manifest)
-        frame = str(data.get("map_frame", self.map_frame)) or self.map_frame
+        # manifest.yaml describes the frame ("map (z-up)"); only the first token
+        # is the TF frame name, the rest is a human-readable note.
+        raw = str(data.get("map_frame", "") or "").strip()
+        frame = raw.split()[0] if raw else self.map_frame
         if frame != self.map_frame:
             rospy.logwarn("[record_waypoints] manifest map_frame %r differs from "
                           "~map_frame %r; using the manifest's", frame, self.map_frame)

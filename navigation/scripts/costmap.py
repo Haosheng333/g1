@@ -29,11 +29,11 @@ DEFAULTS = {
     # robot footprint: `footprint_circles` circles of `circle_radius`, centred on the body
     # axis line y in [-footprint_half_width, +footprint_half_width] (doc: 5 circles, r = 0.10 m)
     "footprint_circles": 5,
-    "footprint_half_width": 0.20,
+    "footprint_half_width": 0.15,    # centres span +-0.15 m -> body half-width 0.25 m (= g1_intellect robot_footprint)
     "circle_radius": 0.10,
     "collision_margin": 0.02,        # footprint clearance (m) below which a pose collides
     # global planner
-    "astar_clearance": 0.35,         # footprint lateral reach (0.20 + 0.10 m) + 0.05 m margin: cells closer to a lethal cell are not traversable
+    "astar_clearance": 0.30,         # footprint lateral reach (0.15 + 0.10 m) + 0.05 m margin: cells closer to a lethal cell are not traversable
     "standable_clearance": 0.40,     # needed around an approach pose (any heading)
     "unknown_is_lethal": True,
     # tier penalties (extra cost per metre = 0.1 * penalty) and soft decay of live/static obstacles
