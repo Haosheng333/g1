@@ -362,6 +362,109 @@ is only usable after the live `camera_init` has been tied to it.
 
 ---
 
+## 7b. Standing-pose waypoints (teleoperate, press `A`)
+
+Record **where the robot itself stood** — a handover spot, say — by driving it
+there and pressing a key. Navigation can send it back to that exact position
+*and heading* later.
+
+```bash
+# 1. localize to a saved map first (section 7). /slam/manager/state must be True.
+roslaunch g1_slam localization.launch map_name:=<map>
+
+# 2. teleoperate to the spot, stop, adjust the heading, then press A
+rosrun g1_slam record_waypoints.py                       # A save · L list · Q quit
+rosrun g1_slam record_waypoints.py _prefix:=handover _snapshot:=true
+
+# 3. list what was recorded
+rosrun g1_slam goto_waypoint.py _list:=true
+
+# 4. go back to one
+rosrun g1_slam goto_waypoint.py _name:=handover_01
+rosrun g1_slam goto_waypoint.py _name:=handover_01 _dry_run:=true   # print, publish nothing
+```
+
+Records live in `<maps_dir>/<map_name>/standing_waypoints.yaml`, one file per
+saved map, overridable with `_waypoints_file:=`. Writes are **atomic** and
+always rewrite from what is already on disk, so existing records — including
+hand-edited ones — survive.
+
+**`A` only records. It never moves the robot.** `record_waypoints.py` builds no
+publisher, no goal client and no motion-gate client at all. Keys come from the
+terminal's own stdin via `termios`/`tty` — no `keyboard` module, no
+`/dev/input`, no `sudo`, and nothing is captured from other windows.
+
+### What a press is checked against
+
+A press is refused, with the reason printed, unless **all** of these hold:
+
+| Check | Why |
+|---|---|
+| `/slam/manager/state` is True | without it the relocalizer publishes no `map → camera_init`, so there are no map coordinates at all |
+| `map → pelvis` exists and is fresh (`_max_tf_age`, default 0.5 s) | a stale transform is a pose from somewhere else |
+| the transform's own frames are the configured ones | so a `camera_init` (odometry) pose can **never** be written into a map-frame file |
+| the file's map identity matches the live `manifest.yaml` | two maps' coordinate origins must not share a file |
+
+Odometry coordinates are therefore never used silently: either the map chain is
+up and localized, or nothing is written.
+
+### Why these records survive a restart
+
+Each record stores `x, y, yaw` in the **`map`** frame plus the identity
+(`map_name` + `created_at`) of the map they were measured in. `map` is defined
+by the **saved map**, not by the session: FAST-LIO2 re-creates `camera_init` at
+every power-on, and the relocalizer's whole job is to publish
+`map → camera_init` so that `map` means the same thing again (section 7). So
+after a restart, once localisation to that **same saved map** succeeds, the
+stored coordinates denote the same physical spot. `goto_waypoint.py` re-checks
+the identity before sending anything, and refuses a different or re-made map
+rather than driving to coordinates from another origin.
+
+### The goal interface, and the offset that is *not* applied
+
+`goto_waypoint.py` publishes to **`/move_base_simple/goal`**
+(`geometry_msgs/PoseStamped` in `map`) — navigation's exact-pose interface, the
+same one rviz's "2D Nav Goal" uses.
+
+**No approach-distance offset is applied, and none must be.**
+`/navigation/navigate` is the *other* interface: it looks a named **object** up
+in `semantic.yaml` and then stands `approach_distance` away from it. A recorded
+standing pose is already the chosen spot, so offsetting it again would park the
+robot a metre away. Two meanings, two files, two goal paths — don't merge them:
+
+| | file | goal path | offset |
+|---|---|---|---|
+| object centre | `semantic.yaml` | `/navigation/navigate` | yes, `approach_distance` |
+| standing pose | `standing_waypoints.yaml` | `/move_base_simple/goal` | **no** |
+
+**Motion gates are untouched.** `goto_waypoint.py` never calls
+`/navigation/enable_motion`; it reports `/navigation/motion_enabled` so a closed
+gate explains itself instead of being bypassed.
+
+### Optional environmental snapshot
+
+`_snapshot:=true` also writes `<name>_<timestamp>.pcd` beside the YAML,
+containing the points of the latest `/cloud_registered` within
+`_snapshot_radius` (default 3 m) of the recorded spot. It is a **reference for a
+human** — nothing reads it back, and no new localisation algorithm is
+implemented; the relocalizer already owns that.
+
+### Parameters
+
+| Param | Default | |
+|---|---|---|
+| `_map_name` | `current` | which saved map under `maps_dir` |
+| `_maps_dir` | `$(rospack find g1_slam)/maps` | |
+| `_waypoints_file` | `<maps_dir>/<map_name>/standing_waypoints.yaml` | |
+| `_prefix` | `handover` | names become `handover_01`, `_02`, … |
+| `_map_frame` / `_robot_frame` | `map` / `pelvis` | |
+| `_max_tf_age` | `0.5` | seconds; older is refused |
+| `_snapshot` / `_snapshot_radius` / `_snapshot_topic` | `false` / `3.0` / `/cloud_registered` | |
+| `_name` (goto) | — | required unless `_list:=true` |
+| `_dry_run` (goto) | `false` | print the goal, publish nothing |
+
+---
+
 ## 8. Health checks
 
 ```bash
