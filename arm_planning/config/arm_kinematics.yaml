@@ -5,6 +5,43 @@ position_units: metres
 angle_units: radians
 orientation_convention: "URDF fixed-axis XYZ Euler angles; rx=roll, rz=yaw, pitch omitted"
 
+# =====================================================================================
+# TOOL POINT (`grasp_xyz` / `grasp_rpy`)
+# =====================================================================================
+# REFERENCE FRAME -- established from code, not assumed.
+# g1_forward_kinematics.forward_kinematics() composes the five joint origins and
+# rotations, then applies grasp_xyz LAST:
+#     T = PROD(origin_i * joint_i)  for i in 0..4   ;   T_tool = T * origin(grasp_xyz)
+# so grasp_xyz is expressed in the frame of the link after the fifth joint, i.e.
+# `<side>_wrist_roll_rubber_hand` (child of `<side>_wrist_roll_joint`). It is NOT
+# in torso_link, and NOT in a URDF frame of its own: `<side>_grasp_frame` appears
+# in NEITHER urdf/g1_23dof.urdf NOR slam/urdf/g1_23dof_mode_10.urdf (grep count
+# 0 in both). The frame exists only here. torch_g1_fk.TorchG1FK applies the same
+# value identically as `tool_xyz`, so the two FK paths agree by construction.
+#
+# MIRROR CONVENTION -- right = left with y negated.
+# This file already mirrors every lateral quantity, and the URDFs agree:
+#     shoulder_pitch origin   left +0.10022     right -0.10021
+#     shoulder_roll  origin   left +0.038       right -0.038
+#     shoulder_yaw   origin   left +0.00624     right -0.00624   (matches both URDFs)
+#     wrist_roll     origin   left +0.00188791  right -0.00188791
+# The right tool point therefore carries -0.06. It is a convention applied to one
+# measurement, not a second measurement.
+#
+# STILL UNCONFIRMED (do not silently resolve these):
+#   * WHICH HAND the (0.215, 0.06, 0.025) measurement was taken on. Under the
+#     y-negation convention |y| = 0.06 on both sides, so the mirror above is
+#     correct either way UNLESS the hand is mounted asymmetrically -- which
+#     nothing here establishes.
+#   * WHETHER the measurement was taken in the wrist_roll_rubber_hand frame
+#     described above. If it was taken from some other datum (palm face, finger
+#     pad, a CAD origin) the number is right but the frame is wrong.
+#   * The link the frame hangs off is the STOCK Unitree rubber hand
+#     (`*_wrist_roll_rubber_hand`). The installed hand is a BrainCo Revo2, whose
+#     geometry is not in either URDF, so this tool point does not describe the
+#     Revo2's own grasp centre.
+# =====================================================================================
+
 collision_checking:
   wrist_roll_for_static_mask: 0.0
 
@@ -93,7 +130,10 @@ left:
     - [1.0, 0.0, 0.0]
   lower_limits: [-3.0892, -1.5882, -2.618, -1.0472, -1.972222054]
   upper_limits: [2.6704, 2.2515, 2.618, 2.0944, 1.972222054]
-  grasp_xyz: [0.215, 0.006, 0.025]
+  # Tool point (left). CONFIRMED 2026-10-14: y is 0.06, not 0.006 -- the previous
+  # value was short by a factor of ten. See "TOOL POINT" at the head of this file
+  # for the reference frame, the mirror convention and what is still unconfirmed.
+  grasp_xyz: [0.215, 0.06, 0.025]
   grasp_rpy: [0.0, 0.0, 0.0]
 
 right:
@@ -119,5 +159,7 @@ right:
     - [1.0, 0.0, 0.0]
   lower_limits: [-3.0892, -2.2515, -2.618, -1.0472, -1.972222054]
   upper_limits: [2.6704, 1.5882, 2.618, 2.0944, 1.972222054]
-  grasp_xyz: [0.215, -0.006, 0.025]
+  # Tool point (right) = left with y negated, this file's convention throughout
+  # (see "TOOL POINT"). Not an independent measurement.
+  grasp_xyz: [0.215, -0.06, 0.025]
   grasp_rpy: [0.0, 0.0, 0.0]
