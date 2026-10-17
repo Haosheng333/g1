@@ -86,6 +86,15 @@ ln -s ../../navigation g1_navigation
 ln -s ../../system_bringup system_bringup
 ```
 
+`arm_grasp/` (package `arm_grasp`, the g1_intellect `g1_arm_abs` arm node
+ported into DIP, node `g1_arm_simple`) is built the same way through
+`g1_ws/src/arm_grasp -> ../../arm_grasp`. Its `models/` is a tracked relative
+symlink into `../../g1_intellect/g1_arm_abs/models` (weights + 28 GB voxel
+bitmaps, shared, never copied). Grasp a typed `torso_link` point with
+`rosrun arm_grasp grasp_point.py plan|grasp X Y Z`; hands come from
+g1_intellect on PC2 (`rosrun g1_hands start_remote_hands.sh`). See
+`arm_grasp/README.md`.
+
 `perception/` is still not part of `g1_ws` and is not referenced by any launch
 file. Leave it unbuilt unless asked.
 

@@ -90,44 +90,25 @@ class PerceptionGeometryIsReal(unittest.TestCase):
         out = m1.push_along_ray(p, 0.033)
         self.assertAlmostEqual(float(np.linalg.norm(out)), 1.033, places=9)
 
-    def test_the_extrinsics_rotation_is_NOT_orthonormal(self):
-        """DEFECT FOUND, measured rather than asserted away.
-
-        `_default_R_base_opt()` is hand-built from two axis vectors copied out
-        of a MuJoCo `xyaxes` string. They are neither exactly unit length nor
-        exactly orthogonal, so the matrix is not a rotation:
-
-            det(R)          = 1.0003759767     (must be 1)
-            max|R^T R - I|  = 3.760e-04        (must be 0)
-            column norms    = 1.000032, 1.000156, 1.000188
-            col0 . col1     = -2.08e-04
-
-        `optical_to_base` therefore applies a small scale-and-shear as well as a
-        rotation: about 188 um per metre, i.e. ~0.19 mm at the ~1 m working
-        range. That is immaterial beside perception's own stated 1.46 cm mean
-        error, so it is recorded as a real-but-minor defect, NOT fixed here:
-        re-orthonormalising a calibration matrix is perception's decision, and
-        this task must not alter calibration.
-        """
+    def test_the_extrinsics_rotation_is_orthonormal(self):
+        """R is built from yaw/pitch/roll Euler matrices, so it is a proper
+        rotation: optical_to_base applies no scale or shear."""
         import numpy as np
         R = self.m1._default_R_base_opt()
-        err = float(np.abs(R.T @ R - np.eye(3)).max())
-        det = float(np.linalg.det(R))
-        self.assertGreater(err, 1e-6, "if this now passes, R was fixed; update this test")
-        self.assertLess(err, 1e-3, "the non-orthonormality grew beyond the recorded 3.8e-4")
-        self.assertAlmostEqual(det, 1.0, places=3)
+        self.assertLess(float(np.abs(R.T @ R - np.eye(3)).max()), 1e-12)
+        self.assertAlmostEqual(float(np.linalg.det(R)), 1.0, places=12)
 
-    def test_optical_to_base_preserves_distance_to_within_that_error(self):
-        """Still a usable transform: the deviation is bounded and tiny."""
+    def test_optical_to_base_preserves_distance(self):
+        """A rigid transform: distances are preserved."""
         import numpy as np
         m1 = self.m1
         ex = m1.Extrinsics()
         a = m1.optical_to_base(np.array([0.0, 0.0, 1.0]), ex)
         b = m1.optical_to_base(np.array([0.0, 0.0, 2.0]), ex)
-        self.assertAlmostEqual(float(np.linalg.norm(b - a)), 1.0, delta=5e-4)
+        self.assertAlmostEqual(float(np.linalg.norm(b - a)), 1.0, places=12)
 
     def test_optical_to_base_is_translation_plus_linear_map(self):
-        """Linearity holds exactly; only orthonormality is off."""
+        """Linearity holds exactly."""
         import numpy as np
         m1 = self.m1
         ex = m1.Extrinsics()
@@ -136,11 +117,12 @@ class PerceptionGeometryIsReal(unittest.TestCase):
         rhs = m1._default_R_base_opt() @ (p - q)
         self.assertTrue(np.allclose(lhs, rhs, atol=1e-12))
 
-    def test_the_declared_output_frame_is_base_link(self):
-        """Boundary 3's premise: perception labels its output base_link."""
-        import inspect
-        src = inspect.getsource(self.m1)
-        self.assertIn('frame_id: str = "base_link"', src)
+    def test_the_declared_output_frame_is_torso_link(self):
+        """Boundary 3's premise: perception labels its output with the frame
+        the camera is mounted on, torso_link, and convert_observation takes it
+        from there."""
+        self.assertEqual(self.m1.BASE_FRAME, "torso_link")
+        self.assertEqual(self.m1.ObjectPositionResult(success=True).frame_id, "torso_link")
 
     def test_median_nonzero_depth_ignores_holes(self):
         import numpy as np

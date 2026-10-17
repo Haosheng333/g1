@@ -2,7 +2,7 @@
 
 Implements the exact algorithm from the pipeline spec: YOLO bbox -> depth patch
 median -> pinhole back-projection -> push along the view ray by the class radius
--> extrinsic transform to the robot base frame. This module has no ROS
+-> extrinsic transform to the robot base frame (``torso_link``). This module has no ROS
 dependency; `handle_get_object_position` has the same fields as the spec's
 GetObjectPosition.srv and is meant to be called directly from a thin rospy
 service wrapper once ROS is available on the robot.
@@ -10,6 +10,7 @@ service wrapper once ROS is available on the robot.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -48,44 +49,59 @@ class CameraIntrinsics:
         return cls(fx=float(K[0, 0]), fy=float(K[1, 1]), cx=float(K[0, 2]), cy=float(K[1, 2]))
 
 
+#: Frame every returned point is expressed in. It is the frame the camera is
+#: rigidly mounted on, so the transform below holds at every waist angle, and it
+#: is the frame the arm planners (arm_grasp, arm_planning) take targets in.
+BASE_FRAME = "torso_link"
+
+#: torso_link -> camera_link mount, calibrated on this robot in g1_intellect
+#: (g1_camera/config/params.yaml, where the same physical frame is labelled
+#: ``base_link``). A constant offset in detected positions is a translation
+#: error; a distance-dependent one is a rotation error, so retune the pitch.
+CAMERA_TRANSLATION = (0.0576235, 0.02753, 0.44487)
+CAMERA_ROTATION_YPR = (0.0, 0.8307767239493009, 0.0)  # yaw, pitch, roll (rad)
+
+
+def euler_ypr_to_matrix(yaw: float, pitch: float, roll: float) -> np.ndarray:
+    """R = Rz(yaw) @ Ry(pitch) @ Rx(roll), right-handed, ROS convention."""
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    cr, sr = math.cos(roll), math.sin(roll)
+    Rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]], dtype=np.float64)
+    Ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]], dtype=np.float64)
+    Rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]], dtype=np.float64)
+    return Rz @ Ry @ Rx
+
+
+#: camera_color_optical_frame (x right, y down, z forward) -> camera_link
+#: (x forward, y left, z up): the fixed (-90, 0, -90) deg ypr rotation.
+R_OPTICAL_TO_LINK = euler_ypr_to_matrix(-math.pi / 2, 0.0, -math.pi / 2)
+
+
+def extrinsics_from_mount(translation, rotation_ypr) -> "Extrinsics":
+    """Build the optical -> base transform from a base -> camera_link mount."""
+    R_base_cam = euler_ypr_to_matrix(*(float(a) for a in rotation_ypr))
+    return Extrinsics(
+        R_base_opt=R_base_cam @ R_OPTICAL_TO_LINK,
+        t_base_opt=np.asarray(translation, dtype=np.float64).reshape(3),
+    )
+
+
 def _default_R_base_opt() -> np.ndarray:
-    # local X/Y axes of the D435i mount, in pelvis-frame directions, from
-    # VisualMimic's published MJCF (github.com/visualmimic/VisualMimic,
-    # asset/g1/lift_box.xml): the d435_link body under torso_link has
-    # xyaxes="-0.008 -1.000 0.000  0.724 -0.006 0.690" (MuJoCo camera-local
-    # convention: X-right/Y-up/looks along -Z). Converting to the OpenCV/ROS
-    # optical convention (X-right/Y-down/Z-forward) used by backproject_pixel
-    # is a 180 deg rotation about local X, i.e. diag(1,-1,-1).
-    local_x = np.array([-0.008, -1.000, 0.000])
-    local_y = np.array([0.724, -0.006, 0.690])
-    local_z = np.cross(local_x, local_y)
-    R_world_camlocal = np.stack([local_x, local_y, local_z], axis=1)
-    return R_world_camlocal @ np.diag([1.0, -1.0, -1.0])
+    return euler_ypr_to_matrix(*CAMERA_ROTATION_YPR) @ R_OPTICAL_TO_LINK
 
 
 @dataclass
 class Extrinsics:
-    """Analytic optical-frame -> base-frame transform (hard-coded, not TF).
+    """Analytic optical-frame -> torso_link transform (hard-coded, not TF).
 
-    Per spec: R_base_opt = R(camera mounting yaw/pitch/roll) @ R_optical_to_link,
-    where R_optical_to_link is the fixed (-90, 0, -90) deg ypr rotation from the
-    camera's optical convention (z forward, x right, y down) to a link-style
-    convention (x forward, y left, z up).
-
-    Defaults below (~46.4 deg downward pitch, ~(0.054, 0.018, 0.474) m from
-    base_link/pelvis at zero waist-joint pose) come from VisualMimic's
-    published MJCF for a head-mounted D435i on this exact G1 (see
-    _default_R_base_opt's docstring) -- a real, deployed sim-to-real setup,
-    not a guess. It independently agrees with two rougher estimates we made
-    before finding it (a ~47.6 deg reading off a third-party FOV diagram, and
-    a ~(0.055, 0.001, 0.463) m position estimate from the official G1 URDF's
-    head mesh), which is reassuring, but it is still someone else's physical
-    mounting, not this team's -- confirm against the real robot once
-    available, especially if the mount differs from VisualMimic's rig.
+    R_base_opt = R(camera mounting yaw/pitch/roll) @ R_OPTICAL_TO_LINK, both
+    proper rotations. Defaults are the mount calibrated on this robot
+    (CAMERA_TRANSLATION / CAMERA_ROTATION_YPR); the node can override them.
     """
 
     R_base_opt: np.ndarray = field(default_factory=_default_R_base_opt)
-    t_base_opt: np.ndarray = field(default_factory=lambda: np.array([0.05366, 0.01753, 0.47387]))
+    t_base_opt: np.ndarray = field(default_factory=lambda: np.array(CAMERA_TRANSLATION, dtype=np.float64))
 
 
 @dataclass
@@ -94,7 +110,7 @@ class ObjectPositionResult:
     x: float = 0.0
     y: float = 0.0
     z: float = 0.0
-    frame_id: str = "base_link"
+    frame_id: str = BASE_FRAME
     message: str = ""
 
 
@@ -179,7 +195,7 @@ def handle_get_object_position(
     extrinsics: Extrinsics,
     label: str,
     index: int = 0,
-    frame_id: str = "base_link",
+    frame_id: str = BASE_FRAME,
 ) -> ObjectPositionResult:
     """Mirrors GetObjectPosition.srv: same request/response fields."""
     records = run_detection_pipeline(rgb, depth_mm, model, K, extrinsics)

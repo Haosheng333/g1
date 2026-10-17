@@ -9,10 +9,10 @@
        configuration (slam/config/mid360_config.json and the host-IP pitfall
        documented in CLAUDE.md). Nothing is duplicated here.
 
-       The RealSense is NOT started here: perception/launch/perception.launch
-       brings up the camera driver together with the perception node, so there
-       is no camera-only launch interface to pass through to. Use
-       system_bringup/manipulation.launch perception:=true for that.
+       The RealSense is NOT started here. On the robot it is wired to PC2 and
+       started there (g1_intellect: `rosrun g1_perception start_remote_camera.sh`);
+       perception/launch/perception.launch local_camera:=true starts it on this
+       host instead.
   -->
   <include file="$(find g1_slam)/launch/sensors.launch"/>
 </launch>

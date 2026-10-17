@@ -21,6 +21,7 @@
 
   <arg name="arm_planning" default="true"/>
   <arg name="perception" default="false"/>
+  <arg name="perception_local_camera" default="false"/>  <!-- true: RealSense on this host, not PC2 -->
   <arg name="hand" default="false"/>
   <arg name="hand_sim" default="false"/>
   <arg name="hand_com_port" default=""/>
@@ -31,8 +32,12 @@
        /arm/planner/ready so the orchestrator's preflight can see it. -->
   <include file="$(find arm_planning)/launch/arm_planning.launch" if="$(arg arm_planning)"/>
 
-  <!-- Module 1. Brings up the RealSense driver too, so it needs the camera. -->
-  <include file="$(find perception)/launch/perception.launch" if="$(arg perception)"/>
+  <!-- Module 1. The D435i driver runs on PC2 (g1_intellect:
+       `rosrun g1_perception start_remote_camera.sh`) unless
+       perception_local_camera:=true starts it on this host. -->
+  <include file="$(find perception)/launch/perception.launch" if="$(arg perception)">
+    <arg name="local_camera" value="$(arg perception_local_camera)"/>
+  </include>
 
   <!-- Module 3.2. Real hand over serial unless hand_sim:=true (MuJoCo). -->
   <include file="$(find hand_control)/launch/hand.launch" if="$(arg hand)">

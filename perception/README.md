@@ -1,7 +1,8 @@
 # perception
 
 Module 1 of the Grasp-and-Deliver pipeline: detects a target object from
-RGB-D and reports its position in the robot base frame. Standard ROS1
+RGB-D and reports its position in `torso_link` (x forward, y left, z up),
+the frame the arm planners take targets in. Standard ROS1
 (catkin) package.
 
 ## Layout
@@ -32,14 +33,14 @@ bool    success
 float64 x
 float64 y
 float64 z
-string  frame_id   # always "base_link"
+string  frame_id   # always "torso_link"
 string  message    # human-readable failure reason
 ```
 
 ```python
 resp = rospy.ServiceProxy("/perception/get_object_position", GetObjectPosition)("bottle", 0)
 if resp.success:
-    x, y, z = resp.x, resp.y, resp.z   # meters, in base_link
+    x, y, z = resp.x, resp.y, resp.z   # meters, in torso_link
 else:
     print(resp.message)
 ```
@@ -55,6 +56,25 @@ Subscribes to (from the RealSense driver, `align_depth:=true`):
 `/camera/color/image_raw`, `/camera/aligned_depth_to_color/image_raw`
 (16UC1, mm), `/camera/color/camera_info`.
 
+The message is byte-identical to g1_intellect's `g1_camera/GetObjectPosition`
+(same md5), so `arm_grasp`'s `grasp_bottle` and g1_intellect's `main_process`
+can call this node unchanged.
+
+### Camera extrinsics
+
+The `torso_link -> camera_link` mount is the one calibrated on this robot in
+g1_intellect (`g1_camera/config/params.yaml`, where the same physical frame is
+labelled `base_link`), with the same parameter keys:
+
+| Param | Default |
+|---|---|
+| `~camera_translation` | `[0.0576235, 0.02753, 0.44487]` m |
+| `~camera_rotation_ypr` | `[0.0, 0.8307767239493009, 0.0]` rad (yaw, pitch, roll) |
+
+The camera is rigidly mounted on `torso_link`, so points are correct at every
+waist angle. A constant offset in detected positions is a translation error; a
+distance-dependent one is a rotation error, so retune the pitch.
+
 ## Build & run
 
 ```bash
@@ -63,8 +83,13 @@ pip install -r perception/requirements.txt
 cd ~/catkin_ws
 catkin build perception
 source devel/setup.bash
-roslaunch perception perception.launch
+roslaunch perception perception.launch                    # camera driver on PC2
+roslaunch perception perception.launch local_camera:=true # camera driver on this host
 ```
+
+On the robot the D435i is wired to PC2; start its driver there with
+g1_intellect's `rosrun g1_perception start_remote_camera.sh` (it publishes the
+same topics).
 
 ## Testing
 
@@ -116,9 +141,9 @@ cp runs/bottle_detect/weights/best.pt perception/models/bottle_finetuned.pt
 
 - Not tested with ROS or a real RealSense (no ROS support on this dev
   machine) -- `perception_node.py` only checked for syntax errors.
-- Camera extrinsics (`Extrinsics()` in `m1_perception.py`) are a real value
-  from a different G1+D435i mount, not this team's own -- measure and
-  replace `R_base_opt`/`t_base_opt` before trusting position output.
+- Camera extrinsics are g1_intellect's on-robot calibration and have not
+  yet been checked from this node against a tape-measured object; the
+  orchestrator keeps `perception_extrinsics` as a grasp blocker until they are.
 - `CLASS_RADIUS_M`'s `"bottle"` entry is measured (a real can, see
   "Detector"); `"cup"`/`"remote"`/the default are still unverified
   placeholders for the stock detector.
