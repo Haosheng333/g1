@@ -91,7 +91,7 @@ class Item18Footprint(unittest.TestCase):
     def test_five_circles_cover_the_body(self):
         cm = open_room()
         self.assertEqual(len(cm.circle_y), 5)
-        self.assertAlmostEqual(float(max(cm.circle_y) - min(cm.circle_y)) + 2 * cm.cfg["circle_radius"], 0.60)
+        self.assertAlmostEqual(float(max(cm.circle_y) - min(cm.circle_y)) + 2 * cm.cfg["circle_radius"], 0.50)
 
     def test_gap_fits_only_with_the_right_heading(self):
         g = np.zeros((120, 160), np.int8)
@@ -100,7 +100,7 @@ class Item18Footprint(unittest.TestCase):
         g[60:, 80] = OBSTACLE
         cm = Costmap.from_grid(gu.compose_tiers(g, RES), RES)
         gate_x, gate_y = 4.025, 2.75
-        self.assertTrue(cm.footprint_collision(gate_x, gate_y, 0.0))            # 0.60 m wide body, 0.50 gap
+        self.assertTrue(cm.footprint_collision(gate_x, gate_y, 0.0))            # 0.50 m wide body, 0.50 gap
         self.assertFalse(cm.footprint_collision(gate_x, gate_y, math.pi / 2))   # turned sideways it fits
 
     def test_collision_cost_is_in_the_dwa_not_only_the_planner(self):

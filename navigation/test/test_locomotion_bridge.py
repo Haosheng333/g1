@@ -40,6 +40,35 @@ def run(core, cmd, age=0.0, n=1, dt=0.05):
     return out
 
 
+class TestDeadbandFloor(unittest.TestCase):
+    def _core(self, c):
+        return LocoCore(c, acc=(10.0, 10.0, 10.0), min_v=(0.12, 0.12, 0.18))
+
+    def test_slow_terminal_command_is_raised_to_the_floor(self):
+        c = Fake()
+        out = self._core(c).update((0.06, -0.05, 0.0), 0.0, 1.0)
+        self.assertAlmostEqual(out[0], 0.12)
+        self.assertAlmostEqual(out[1], -0.12)
+        self.assertEqual(out[2], 0.0)
+
+    def test_noise_on_an_axis_is_not_inflated(self):
+        c = Fake()
+        out = self._core(c).update((0.02, 0.0, -0.60), 0.0, 1.0)
+        self.assertAlmostEqual(out[0], 0.02)          # not turned into a 0.12 m/s forward walk while turning
+        self.assertAlmostEqual(out[2], -0.60)
+
+    def test_fast_commands_and_zero_are_unchanged(self):
+        c = Fake()
+        core = self._core(c)
+        self.assertAlmostEqual(core.update((0.30, 0.0, 0.0), 0.0, 1.0)[0], 0.30)
+        self.assertEqual(core.update((0.0, 0.0, 0.0), 0.0, 1.0), (0.0, 0.0, 0.0))
+
+    def test_floor_never_exceeds_the_clamp(self):
+        c = Fake()
+        core = LocoCore(c, max_v=(0.10, 0.3, 1.0), acc=(10.0, 10.0, 10.0), min_v=(0.12, 0.0, 0.0))
+        self.assertAlmostEqual(core.update((0.05, 0.0, 0.0), 0.0, 1.0)[0], 0.10)
+
+
 class TestLocoCore(unittest.TestCase):
     def test_idle_sends_nothing(self):
         c = Fake()

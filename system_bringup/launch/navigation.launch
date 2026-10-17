@@ -33,6 +33,10 @@
        rosservice call /navigation/enable_motion "data: true". -->
   <arg name="locomotion" default="false"/>
   <arg name="locomotion_dry_run" default="true"/>
+  <!-- G1 walking dead-band floor (m/s, m/s, rad/s); slower nonzero commands are raised to this. 0 disables. -->
+  <arg name="loco_min_vx" default="0.12"/>
+  <arg name="loco_min_vy" default="0.12"/>
+  <arg name="loco_min_wz" default="0.18"/>
 
   <node pkg="g1_navigation" type="g1_joint_state_bridge.py" name="g1_joint_state_bridge" output="screen">
     <param name="mode" value="$(arg joint_mode)"/>
@@ -43,6 +47,9 @@
 
   <node if="$(arg locomotion)" pkg="g1_navigation" type="locomotion_bridge.py" name="locomotion_bridge" output="screen">
     <param name="dry_run" type="bool" value="$(arg locomotion_dry_run)"/>
+    <param name="min_vx" value="$(arg loco_min_vx)"/>
+    <param name="min_vy" value="$(arg loco_min_vy)"/>
+    <param name="min_wz" value="$(arg loco_min_wz)"/>
     <param name="network_interface" value="$(arg network_interface)"/>
   </node>
 

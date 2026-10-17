@@ -31,9 +31,10 @@ spec_settle_time: 2.0               # s inside the SPEC tolerance (0.10 m / 0.1 
 costmap:
   footprint_circles: 5              # doc: 5 circles ...
   circle_radius: 0.10               # ... of r = 0.10 m
-  footprint_half_width: 0.20        # circle centres span +-0.20 m (total body half-width 0.30 m)
+  footprint_half_width: 0.15        # circle centres span +-0.15 m (total body half-width 0.25 m), matching
+                                    # g1_intellect g1_navigation/config/navigation.yaml :: robot_footprint.circles
   collision_margin: 0.02
-  astar_clearance: 0.35             # footprint reach 0.30 m + 0.05 m margin (0.30 let the body squeeze through 0.7 m gaps)
+  astar_clearance: 0.30             # footprint reach 0.25 m + 0.05 m margin; keeps A* consistent with the DWA footprint check
   standable_clearance: 0.40
   unknown_is_lethal: true
   risk_penalty: 6.0

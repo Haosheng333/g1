@@ -78,6 +78,7 @@ class NavigationNode:
         self.path_check_distance = float(p("~path_check_distance", 2.0))
         self.live_period = 1.0 / float(p("~live_rate", 5.0))
         self.spec_settle = float(p("~spec_settle_time", 2.0))
+        self.tight_xy_tol = float(p("~tight_xy_tol", 0.03))   # m: arrival radius for TIGHT goals (furniture)
         self.rate_hz = float(p("~rate", 10.0))
 
         self.cmgr = CostmapManager(**dict(p("~costmap", {})))
@@ -383,12 +384,19 @@ class NavigationNode:
         if target is None:
             self._finish(goal, FAILURE, why)
             return
-        path = self.planner.plan(cm, (pose[0], pose[1]), (target[0], target[1]))
+        path = self.planner.plan(cm, (pose[0], pose[1]), (target[0], target[1]), goal_yaw=target[2])
         if not path:
             self._recover(goal, now, "planner found no path (%s)" % self.planner.last_info.get("reason", ""))
             return
         path[-1] = (target[0], target[1])        # end exactly on the goal, not the cell centre
         goal["path"], goal["target"] = path, target
+        goal["approach_from"] = self.planner.last_info.get("approach_from")
+        goal["clear_floor"] = self.planner.last_info.get("clear_floor")
+        goal["approach_len"] = self.planner.last_info.get("approach_len", 0.0)
+        if goal["clear_floor"] is not None:
+            rospy.logwarn("[navigation_node] TIGHT goal: footprint overlaps the map by %.3f m at its heading; final "
+                          "%.2f m straight in with clearance floor %.3f m",
+                          max(0.0, -goal["clear_floor"] - 0.005), goal["approach_len"], goal["clear_floor"])
         goal["progress"] = (now, pose[0], pose[1], pose[2])
         goal["blocked_since"] = None
         goal["spec_since"] = None
@@ -399,7 +407,7 @@ class NavigationNode:
                       target[0], target[1], "any" if target[2] is None else "%.2f" % target[2])
         self._set_status_if_changed(FOLLOWING)
 
-    def _path_blocked(self, cm, path, pose):
+    def _path_blocked(self, cm, path, pose, goal=None):
         """True if the next `path_check_distance` metres of path (beyond 0.4 m) are no longer traversable."""
         arr = np.asarray(path, dtype=np.float64)
         i = int(np.argmin(np.hypot(arr[:, 0] - pose[0], arr[:, 1] - pose[1])))
@@ -412,6 +420,10 @@ class NavigationNode:
             if math.hypot(arr[j, 0] - pose[0], arr[j, 1] - pose[1]) < 0.4:
                 continue
             if not cm.is_free(*cm.world_to_map(arr[j, 0], arr[j, 1])):
+                if (goal is not None and goal.get("approach_from") is not None
+                        and math.hypot(arr[j, 0] - arr[-1, 0], arr[j, 1] - arr[-1, 1])
+                        <= max(self.planner.cfg["goal_snap"], goal.get("approach_len", 0.0)) + cm.resolution):
+                    continue                     # the planned close-approach tail: checked by footprint instead
                 return True
         return False
 
@@ -422,20 +434,26 @@ class NavigationNode:
             self._stop()
             return
         # live obstacle appeared on the path: re-plan (rate-limited)
-        if now - goal["last_plan"] > self.replan_min_interval and self._path_blocked(cm, goal["path"], pose):
+        if now - goal["last_plan"] > self.replan_min_interval and self._path_blocked(cm, goal["path"], pose, goal):
             rospy.logwarn("[navigation_node] path blocked by a new obstacle: re-planning")
             goal["path"] = None
             self._stop()
             return
         gx, gy, gyaw = goal["target"]
-        res = self.dwa.compute(pose, self.cur_vel, goal["path"], (gx, gy), gyaw, cm)
+        floor = None
+        if goal.get("clear_floor") is not None and \
+                math.hypot(gx - pose[0], gy - pose[1]) <= goal.get("approach_len", 0.0) + 0.10:
+            floor = goal["clear_floor"]            # final straight approach to a tight goal only
+        tight = goal.get("clear_floor") is not None
+        res = self.dwa.compute(pose, self.cur_vel, goal["path"], (gx, gy), gyaw, cm, clear_floor=floor,
+                               xy_tol=self.tight_xy_tol if tight else None)
         self.internal = "FOLLOWING/" + res.phase
         # Safety net: the controller aims at 0.08 m / 0.08 rad, tighter than the spec.  If the walking
         # controller's dead-band keeps it from getting there but it has been inside the SPEC tolerance
         # (doc section 7: < 0.10 m AND < 0.1 rad) for `spec_settle_time`, that IS arrival.
         d_goal = math.hypot(gx - pose[0], gy - pose[1])
         yaw_err = abs(_wrap(gyaw - pose[2])) if gyaw is not None else 0.0
-        if d_goal < SPEC_XY_TOL and yaw_err < SPEC_YAW_TOL:
+        if d_goal < (self.tight_xy_tol if tight else SPEC_XY_TOL) and yaw_err < SPEC_YAW_TOL:
             if goal.get("spec_since") is None:
                 goal["spec_since"] = now
             elif now - goal["spec_since"] >= self.spec_settle:
