@@ -17,11 +17,14 @@ from pathlib import Path
 import numpy as np
 
 from perception.m1_perception import (
+    BASE_FRAME,
+    CAMERA_TRANSLATION,
     CameraIntrinsics,
     Extrinsics,
     backproject_pixel,
     handle_get_object_position,
     median_nonzero_depth,
+    ObjectPositionResult,
     optical_to_base,
     push_along_ray,
 )
@@ -65,6 +68,25 @@ def test_push_along_ray_and_extrinsics() -> None:
     print("[ok] ray push + extrinsic transform match expected geometry")
 
 
+def test_default_extrinsics_are_the_calibrated_torso_mount() -> None:
+    ext = Extrinsics()
+    R = ext.R_base_opt
+    assert np.allclose(R.T @ R, np.eye(3), atol=1e-12), "must be orthonormal"
+    assert abs(np.linalg.det(R) - 1.0) < 1e-12, "must be a proper rotation"
+    assert np.allclose(ext.t_base_opt, CAMERA_TRANSLATION)
+    # optical +z (the viewing axis) looks forward and down by the 0.8308 rad pitch
+    view = R @ np.array([0.0, 0.0, 1.0])
+    assert np.allclose(view, [np.cos(0.8307767239493009), 0.0, -np.sin(0.8307767239493009)], atol=1e-9)
+    # optical +x (image right) is the robot's right, optical +y (image down) is down-ish
+    assert np.allclose(R @ np.array([1.0, 0.0, 0.0]), [0.0, -1.0, 0.0], atol=1e-9)
+    assert (R @ np.array([0.0, 1.0, 0.0]))[2] < 0.0
+    # a point 0.6 m along the view axis lands in front of and below the camera
+    p = optical_to_base(np.array([0.0, 0.0, 0.6]), ext)
+    assert p[0] > CAMERA_TRANSLATION[0] and p[2] < CAMERA_TRANSLATION[2]
+    assert BASE_FRAME == "torso_link" and ObjectPositionResult(success=True).frame_id == "torso_link"
+    print("[ok] default extrinsics = calibrated torso_link mount, proper rotation")
+
+
 def test_end_to_end_on_real_photo() -> None:
     import cv2
     from ultralytics import YOLO
@@ -76,8 +98,8 @@ def test_end_to_end_on_real_photo() -> None:
 
     model = YOLO("yolov8n.pt")
     K = CameraIntrinsics(fx=615.0, fy=615.0, cx=rgb.shape[1] / 2, cy=rgb.shape[0] / 2)
-    # explicit identity (not the Extrinsics() default, which is now the real
-    # G1+D435i mount): this test wants camera-optical-frame output, unrelated
+    # explicit identity (not the Extrinsics() default, which is the calibrated
+    # torso_link mount): this test wants camera-optical-frame output, unrelated
     # to the sample photo's imaginary camera placement
     extrinsics = Extrinsics(R_base_opt=np.eye(3), t_base_opt=np.zeros(3))
 
@@ -91,5 +113,6 @@ if __name__ == "__main__":
     test_backprojection_round_trip()
     test_depth_patch_median_rejects_zeros()
     test_push_along_ray_and_extrinsics()
+    test_default_extrinsics_are_the_calibrated_torso_mount()
     test_end_to_end_on_real_photo()
     print("\nAll Module 1 validation checks passed.")

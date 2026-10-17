@@ -171,23 +171,17 @@ CAPABILITIES = {
     PERCEPTION_EXTRINSICS: Capability(
         key=PERCEPTION_EXTRINSICS, owner="perception",
         unresolved=(
-            "perception's camera -> base_link extrinsics are not established, and the "
-            "base_link -> planner conversion CANNOT repair a point already computed "
-            "with the wrong ones. Three separate problems, all in "
-            "perception/src/perception/m1_perception.py. (1) PROVENANCE: Extrinsics() "
-            "is hard-coded from a MuJoCo xyaxes string for a torso-mounted D435 on a "
-            "DIFFERENT robot; perception's own README says to measure and replace "
-            "R_base_opt/t_base_opt before trusting the output. (2) WAIST COUPLING: "
-            "that camera is mounted on torso_link, which DOES rotate with the waist, "
-            "while the extrinsics are expressed as a fixed base_link -> optical "
-            "transform. So the output is only valid near zero waist yaw, and this "
-            "limitation belongs to the extrinsics, never to base_link (which is an "
-            "identity alias of pelvis at every waist angle). (3) NOT A ROTATION: "
-            "_default_R_base_opt() has det = 1.0003760 and max|R^T R - I| = 3.76e-04, "
-            "so optical_to_base applies ~188 um/m of scale-and-shear as well as a "
-            "rotation. Small, but it is a calibration defect, not a convention. "
-            "Measuring the real mount, deciding how the waist angle enters, and "
-            "re-orthonormalising the matrix are perception's to do"
+            "perception's camera extrinsics are not yet verified on this robot. "
+            "perception/src/perception/m1_perception.py now uses the torso_link -> "
+            "camera_link mount calibrated on this robot in g1_intellect (g1_camera, "
+            "where torso_link is labelled base_link), as a proper rotation, and "
+            "reports points in torso_link, which carries the camera, so the result "
+            "holds at every waist angle. What is open: (1) no DIP run has checked "
+            "a detected point against a tape-measured object; (2) that calibration "
+            "was tuned against g1_intellect's arm (arm_grasp), and it is unconfirmed "
+            "whether its torso_link datum is the TF torso_link that "
+            "/arm/convert_observation assumes before its -0.010 m planner offset. "
+            "Measure one object with the camera up, then clear this"
         ),
     ),
 }

@@ -1,6 +1,10 @@
 <launch>
-  <!-- RealSense driver: must publish aligned depth for Module 1's back-projection -->
-  <include file="$(find realsense2_camera)/launch/rs_camera.launch">
+  <!-- The D435i is wired to G1 PC2, so on the robot its driver is started
+       there (g1_intellect: `rosrun g1_perception start_remote_camera.sh`) and
+       publishes the same topics. local_camera:=true starts it on this host
+       instead (aligned depth is required for the back-projection). -->
+  <arg name="local_camera" default="false" />
+  <include if="$(arg local_camera)" file="$(find realsense2_camera)/launch/rs_camera.launch">
     <arg name="align_depth" value="true" />
     <arg name="color_width" value="1280" />
     <arg name="color_height" value="720" />
@@ -9,6 +13,10 @@
     <arg name="color_fps" value="15" />
     <arg name="depth_fps" value="15" />
   </include>
-
-  <node name="perception_node" pkg="perception" type="perception_node.py" output="screen" />
+  <!-- torso_link -> camera_link mount; defaults are the on-robot calibration
+       (same keys as g1_camera/config/params.yaml). -->
+  <node name="perception_node" pkg="perception" type="perception_node.py" output="screen">
+    <rosparam param="camera_translation">[0.0576235, 0.02753, 0.44487]</rosparam>
+    <rosparam param="camera_rotation_ypr">[0.0, 0.8307767239493009, 0.0]</rosparam>
+  </node>
 </launch>
