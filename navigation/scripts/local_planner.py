@@ -116,16 +116,20 @@ class DwaController:
         return vals
 
     # ---------------------------------------------------------------- main
-    def compute(self, pose, cur_vel, path, goal_xy, goal_yaw, cm):
+    def compute(self, pose, cur_vel, path, goal_xy, goal_yaw, cm, clear_floor=None, xy_tol=None):
         """pose=(x, y, yaw) in the map frame, cur_vel=(vx, vy, wz) last commanded body velocity,
-        path = list of (x, y) (may be empty), goal_xy=(x, y), goal_yaw=float|None, cm=costmap.Costmap."""
+        path = list of (x, y) (may be empty), goal_xy=(x, y), goal_yaw=float|None, cm=costmap.Costmap.
+        clear_floor: lower collision limit used ONLY on the final straight approach to a tight goal
+        (navigation_node passes it there; the planner derived it from the goal's own clearance).
+        xy_tol: arrival radius override (tight goals use a smaller one than cfg xy_tol)."""
         c = self.cfg
+        tol_xy = c["xy_tol"] if xy_tol is None else float(xy_tol)
         x, y, yaw = pose
         gx, gy = goal_xy
         dist_goal = math.hypot(gx - x, gy - y)
         yaw_err = wrap(goal_yaw - yaw) if goal_yaw is not None else 0.0
 
-        if dist_goal < c["xy_tol"] and abs(yaw_err) < c["yaw_tol"]:
+        if dist_goal < tol_xy and abs(yaw_err) < c["yaw_tol"]:
             return DwaResult(phase=self.phase, reached=True)
 
         self._update_phase(dist_goal)
@@ -152,7 +156,7 @@ class DwaController:
         # dynamic window samples ------------------------------------------------------------
         ax, ay, aw = c["acc"]
         cvx, cvy, cwz = cur_vel
-        if phase == TERMINAL and dist_goal < c["xy_tol"]:
+        if phase == TERMINAL and dist_goal < tol_xy:
             vx_s, vy_s = np.array([0.0]), np.array([0.0])          # position done: only rotate
         else:
             vx_s = self._axis(cvx, c["min_vx"], lim_vx, ax, c["n_vx"])
@@ -174,6 +178,8 @@ class DwaController:
 
         cur_clear = cm.footprint_clearance(x, y, yaw)
         thr = cm.cfg["collision_margin"]
+        if clear_floor is not None:
+            thr = min(thr, clear_floor)
         if cur_clear < thr:                       # already too close: only allow not getting worse
             thr = cur_clear - 0.005
         ok = min_clear >= thr

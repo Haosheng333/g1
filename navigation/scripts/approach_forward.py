@@ -17,7 +17,7 @@ measured in `camera_init` (FAST-LIO2 odometry: smooth, no relocalizer correction
 
 Stops, whichever comes first:
   * travelled >= |distance| - stop_early                 -> SUCCESS
-  * live front gap < min_front_gap (forward only)        -> STOPPED_GAP   (exit 1)
+  * live front gap < min_front_gap (forward only)        -> STOPPED_GAP   (exit 3: at the obstacle, not an error)
   * no fresh /cloud_registered or TF for 0.5 s           -> ABORT        (exit 1)
   * timeout, motion gate closed, navigation busy, Ctrl+C -> ABORT        (exit 1)
 
@@ -216,7 +216,7 @@ def main():
         pass
     print("%s: travelled %+.3f m of %+.3f m, front gap now %.3f m%s"
           % (status, travelled, distance, st["gap"], (" (" + why + ")") if why else ""))
-    return 0 if status == SUCCESS else 1
+    return {SUCCESS: 0, STOPPED_GAP: 3}.get(status, 1)
 
 
 if __name__ == "__main__":

@@ -204,6 +204,82 @@ class CloseApproachTests(unittest.TestCase):
         self.assertGreaterEqual(sim.min_clear, self.cm.cfg["collision_margin"] - 1e-6)
 
 
+class StandoffTests(unittest.TestCase):
+    """A standing pose recorded TOUCHING a table: no footprint fits there, so navigation stops at the nearest
+    reachable pose straight back along the same heading."""
+
+    def setUp(self):
+        g = np.zeros((120, 120), np.int8)
+        g[0, :] = g[-1, :] = g[:, 0] = g[:, -1] = OBSTACLE
+        g[40:80, 80:100] = OBSTACLE                 # table face at x = 4.0
+        self.cm = Costmap.from_grid(gu.compose_tiers(g, RES), RES)
+        self.pl = AStarPlanner()
+        self.goal = (4.0 - 0.11, 3.0)               # front of the body 1 cm from the table
+
+    def test_touching_pose_is_rejected_but_has_a_standoff_on_the_same_line(self):
+        self.assertFalse(self.pl.goal_pose_ok(self.cm, self.goal, 0.0))
+        x, y, back = self.pl.standoff(self.cm, self.goal, 0.0, 0.40)
+        self.assertAlmostEqual(y, 3.0)
+        self.assertLess(x, self.goal[0])
+        self.assertGreater(back, 0.0)
+        self.assertLessEqual(back, 0.40)
+        self.assertTrue(self.pl.plan(self.cm, (1.0, 3.0), (x, y), goal_yaw=0.0))
+
+    def test_no_standoff_when_the_line_back_is_blocked_too(self):
+        g = np.zeros((120, 120), np.int8)
+        g[0, :] = g[-1, :] = g[:, 0] = g[:, -1] = OBSTACLE
+        g[:, 75:] = OBSTACLE                        # solid from x = 3.75: nothing within 0.40 m back fits
+        cm = Costmap.from_grid(gu.compose_tiers(g, RES), RES)
+        self.assertIsNone(self.pl.standoff(cm, (3.70, 3.0), 0.0, 0.10))   # only 0.10 m may be backed off
+
+    def test_no_heading_no_standoff(self):
+        self.assertIsNone(self.pl.standoff(self.cm, self.goal, None))
+
+
+class TightGoalTests(unittest.TestCase):
+    """A standing pose recorded with the body 1 cm INTO the mapped table edge (map noise: the robot stood
+    there).  Navigation must reach it exactly, never getting closer to anything than the pose itself."""
+
+    def setUp(self):
+        g = np.zeros((120, 120), np.int8)
+        g[0, :] = g[-1, :] = g[:, 0] = g[:, -1] = OBSTACLE
+        g[40:80, 80:100] = OBSTACLE                 # table face at x = 4.0
+        self.cm = Costmap.from_grid(gu.compose_tiers(g, RES), RES)
+        self.pl = AStarPlanner()
+        self.goal = (3.91, 3.0)                     # footprint 1 cm into the mapped edge (probed)
+
+    def test_tight_goal_is_planned_to_the_exact_pose_with_a_floor(self):
+        fc = self.cm.footprint_clearance(self.goal[0], self.goal[1], 0.0)
+        self.assertLess(fc, 0.0)
+        path = self.pl.plan(self.cm, (1.0, 3.0), self.goal, goal_yaw=0.0)
+        self.assertTrue(path)
+        self.assertAlmostEqual(path[-1][0], self.goal[0])
+        self.assertLessEqual(self.pl.last_info["clear_floor"], fc)
+
+    def test_goal_inside_the_table_or_too_deep_is_still_rejected(self):
+        self.assertEqual(self.pl.plan(self.cm, (1.0, 3.0), (4.3, 3.0), goal_yaw=0.0), [])
+        self.assertEqual(self.pl.plan(self.cm, (1.0, 3.0), (3.95, 3.0), goal_yaw=0.0), [])   # 5 cm overlap
+        self.assertEqual(self.pl.plan(self.cm, (1.0, 3.0), self.goal), [])                   # no heading
+
+    def test_dwa_reaches_it_with_the_floor_only_near_the_goal(self):
+        path = self.pl.plan(self.cm, (1.0, 3.0), self.goal, goal_yaw=0.0)
+        floor, alen = self.pl.last_info["clear_floor"], self.pl.last_info["approach_len"]
+        sim = Sim(self.cm, (1.0, 3.0, 0.0))
+        t, ok = 0.0, False
+        while t < 60.0:
+            near = math.hypot(self.goal[0] - sim.pose[0], self.goal[1] - sim.pose[1]) <= alen + 0.10
+            r = sim.dwa.compute(tuple(sim.pose), sim.cmd, path, self.goal, 0.0, self.cm,
+                                clear_floor=floor if near else None)
+            if r.reached:
+                ok = True
+                break
+            sim.cmd = (0.0, 0.0, 0.0) if r.blocked else (r.vx, r.vy, r.wz)
+            sim.step(*sim.cmd)
+            t += sim.dt
+        self.assertTrue(ok)
+        self.assertGreaterEqual(sim.min_clear, floor - 1e-6)
+
+
 class DwaTests(unittest.TestCase):
     def setUp(self):
         self.cm = Costmap.from_grid(furnished_room(), RES)

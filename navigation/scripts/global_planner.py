@@ -14,7 +14,8 @@ import time
 
 import numpy as np
 
-DANGER_TIER = 66   # costmap tier value of DANGER (g1_slam grid_utils); lethal is 100
+DANGER_TIER = 66   # costmap tier value of DANGER (g1_slam grid_utils)
+LETHAL_TIER = 100
 
 SQRT2 = math.sqrt(2.0)
 NEIGHBOURS = [(1, 0, 1.0), (-1, 0, 1.0), (0, 1, 1.0), (0, -1, 1.0),
@@ -29,6 +30,10 @@ DEFAULTS = {
     "goal_snap": 0.30,           # metres: a goal that fails the round point-robot clearance but whose real
                                  # footprint fits at the goal heading is reached via the nearest free cell
                                  # within this radius plus a final straight approach (footprint-checked)
+    "tight_max_overlap": 0.03,   # metres: a recorded standing pose whose footprint overlaps the MAP by up to
+                                 # this much (map noise at furniture edges: the robot physically stood there)
+                                 # is still reached, along a straight line back along its own heading
+    "tight_max_back": 0.60,      # metres: how far back along that heading free floor must be found
     "los_max_penalty": 25.0,     # do not prune across cells costlier than this
     "los_window": 6.0,           # metres of path examined from each anchor when pruning
     "corner_radius": 0.50,       # Bezier rounding radius at each corner (m)
@@ -58,6 +63,65 @@ class AStarPlanner:
             return False
         return cm.footprint_clearance(goal_w[0], goal_w[1], goal_yaw) >= cm.cfg["collision_margin"]
 
+    def tight_floor(self, cm, goal_w, goal_yaw):
+        """Clearance floor for a TIGHT exact-pose goal (footprint overlaps the map slightly at its heading),
+        or None if the goal is not a plausible standing pose.  The floor is the goal's own clearance minus
+        5 mm: on the final straight approach the robot never gets closer to anything than the pose itself."""
+        if goal_yaw is None:
+            return None
+        mx, my = cm.world_to_map(goal_w[0], goal_w[1])
+        if not cm.in_bounds(mx, my) or cm.grid[my, mx] >= LETHAL_TIER:
+            return None
+        if cm.dist[my, mx] < cm.cfg["circle_radius"]:          # the pelvis point itself is in an obstacle
+            return None
+        fc = cm.footprint_clearance(goal_w[0], goal_w[1], goal_yaw)
+        if fc < -self.cfg["tight_max_overlap"]:
+            return None
+        return min(fc, cm.cfg["collision_margin"]) - 0.005
+
+    def _tight_entry(self, cm, goal_w, goal_yaw, floor):
+        """First FREE cell straight back along goal_yaw from which the straight run to the goal keeps the
+        footprint at goal_yaw above `floor`.  -> map cell or None."""
+        c, s = math.cos(goal_yaw), math.sin(goal_yaw)
+        b = cm.resolution
+        while b <= self.cfg["tight_max_back"] + 1e-9:
+            p = (goal_w[0] - b * c, goal_w[1] - b * s)
+            cell = cm.world_to_map(*p)
+            if cm.is_free(*cell):
+                a = cm.map_to_world(*cell)
+                if self._segment_ok(cm, a, goal_w, goal_yaw, floor):
+                    return cell
+            b += 0.5 * cm.resolution
+        return None
+
+    def _segment_ok(self, cm, a_w, goal_w, goal_yaw, floor):
+        dist = math.hypot(goal_w[0] - a_w[0], goal_w[1] - a_w[1])
+        for t in np.linspace(0.0, 1.0, max(2, int(dist / (0.5 * cm.resolution)) + 1)):
+            if cm.footprint_clearance(a_w[0] + (goal_w[0] - a_w[0]) * t, a_w[1] + (goal_w[1] - a_w[1]) * t,
+                                      goal_yaw) < floor:
+                return False
+        return True
+
+    def standoff(self, cm, goal_w, goal_yaw, max_back=0.40):
+        """Nearest pose straight BACK from goal_w along goal_yaw (same heading) that the robot can stand on,
+        or None.  For exact-pose goals recorded touching furniture: navigation stops here and a guarded
+        straight-ahead step (approach_forward.py) covers the rest with the LIVE front gap.
+        -> (x, y, back_distance)"""
+        if goal_yaw is None:
+            return None
+        c, s = math.cos(goal_yaw), math.sin(goal_yaw)
+        step = 0.5 * cm.resolution
+        b = step
+        while b <= max_back + 1e-9:
+            p = (goal_w[0] - b * c, goal_w[1] - b * s)
+            mx, my = cm.world_to_map(*p)
+            if cm.in_bounds(mx, my) and (
+                    (cm.is_free(mx, my) and cm.footprint_clearance(p[0], p[1], goal_yaw) >= cm.cfg["collision_margin"])
+                    or self.goal_pose_ok(cm, p, goal_yaw)):
+                return p[0], p[1], b
+            b += step
+        return None
+
     def _approach_ok(self, cm, a_w, goal_w, goal_yaw):
         """The final straight segment a_w -> goal_w is collision-free for the footprint at goal_yaw."""
         dist = math.hypot(goal_w[0] - a_w[0], goal_w[1] - a_w[1])
@@ -79,14 +143,23 @@ class AStarPlanner:
         g = cm.world_to_map(goal_w[0], goal_w[1])
         approach_from = None
         if not cm.is_free(*g):
-            if not self.goal_pose_ok(cm, goal_w, goal_yaw):
-                self.last_info["reason"] = "goal cell is not traversable"
-                return []
-            approach_from = self._snap_goal(cm, g, goal_w, goal_yaw)
-            if approach_from is None:
-                self.last_info["reason"] = ("goal footprint fits at its heading but no free cell within %.2f m "
-                                            "has a clear straight approach" % self.cfg["goal_snap"])
-                return []
+            if self.goal_pose_ok(cm, goal_w, goal_yaw):
+                approach_from = self._snap_goal(cm, g, goal_w, goal_yaw)
+                if approach_from is None:
+                    self.last_info["reason"] = ("goal footprint fits at its heading but no free cell within %.2f m "
+                                                "has a clear straight approach" % self.cfg["goal_snap"])
+                    return []
+            else:
+                floor = self.tight_floor(cm, goal_w, goal_yaw)
+                if floor is None:
+                    self.last_info["reason"] = "goal cell is not traversable"
+                    return []
+                approach_from = self._tight_entry(cm, goal_w, goal_yaw, floor)
+                if approach_from is None:
+                    self.last_info["reason"] = ("tight goal: no free floor within %.2f m straight back along its "
+                                                "heading" % self.cfg["tight_max_back"])
+                    return []
+                self.last_info["clear_floor"] = floor
             g = approach_from
         if not cm.is_free(*s):
             s = self._snap(cm, s)
@@ -104,6 +177,7 @@ class AStarPlanner:
             return self.smooth(cm, pts)
         pts = self.smooth(cm, self.prune(cm, pts)) if len(pts) > 1 else pts
         self.last_info["approach_from"] = pts[-1]
+        self.last_info["approach_len"] = math.hypot(goal_w[0] - pts[-1][0], goal_w[1] - pts[-1][1])
         tail = self._resample([pts[-1], (float(goal_w[0]), float(goal_w[1]))])
         return pts + tail[1:]
 
