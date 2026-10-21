@@ -1,5 +1,32 @@
 # handover
 
+## The working path: `handover_node.py` (g1_intellect's flow)
+
+```bash
+roslaunch handover handover.launch                # arm:=left label:=bottle target_xyz:="[0.35, 0.0, 0.15]"
+rosrun handover handover_cli.py start                 # after a grasp: held arm -> handover pose, tactile monitor armed
+rostopic echo /handover/state                     # idle | moving | armed | releasing | done | error:<why>
+rosrun handover handover_cli.py release               # manual release if nobody pulls
+rosrun handover handover_cli.py abort                 # disarm, arm stays
+```
+
+`handover_node.py` reproduces g1_intellect `main_process`'s `_run_handover`
+/ `_run_release`: pre-A* "elbow up" joint pose, `plan_to_pose` to the target
+(orientation free), the path driven through `move_arm_joints` in 10° steps,
+a settle, then `/auto_release_monitor/arm`. The monitor is g1_hands'
+`auto_release_monitor_node` (same detector and thresholds as g1_intellect,
+reading `/g1_hand_<arm>/tactile` from the Revo2 nodes on PC2). A detected
+pull calls `/handover/run_auto_release`: `/g1_hand_<arm>/release`, settle
+1.5 s, `GoHomeArm(arm)`. Needs `arm_node_abs.launch` and
+`rosrun hand_control start_remote_hands.sh` running.
+
+The rest of this file describes the earlier, detection-only design
+(`auto_release_monitor.py`) that waited for the tactile schema; that schema
+is now known (`g1_hands/TactileStatus`: `normal_force[5]`,
+`tangential_force[5]`, `tangential_direction[5]`, `self_proximity[5]`, raw
+counts, ~26 Hz), but the g1_intellect monitor above is what is used.
+
+
 Tactile-triggered handover: detect a human taking the object the robot is
 holding, and ask the **orchestrator** to release it.
 

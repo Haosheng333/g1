@@ -1,0 +1,39 @@
+<launch>
+  <!-- DIP handover, the g1_intellect way: handover_node drives the held arm
+       to a pose in front of the robot and arms g1_hands' tactile
+       auto_release_monitor (same detector and thresholds as g1_intellect,
+       fed by /g1_hand_<arm>/tactile from the Revo2 nodes on PC2). A detected
+       pull calls back /handover/run_auto_release: hand release, settle,
+       GoHomeArm. Needs arm_node_abs.launch and the hands running.
+
+         roslaunch handover handover.launch                 # left arm, "bottle"
+         rosrun handover handover_cli.py start                  # (after a successful grasp)
+         rostopic echo /handover/state
+  -->
+  <arg name="arm" default="left" />
+  <arg name="label" default="bottle" />
+  <arg name="target_xyz" default="[0.35, 0.0, 0.15]" />   <!-- torso_link, m -->
+  <arg name="hold_sec" default="0.5" />
+  <arg name="release_settle_sec" default="1.5" />
+  <arg name="monitor" default="true" />
+  <!-- Detector tuning, passed to g1_hands' monitor (its own defaults are for
+       the same hands); see g1_hands/scripts/auto_release_monitor_node.py. -->
+  <arg name="unload_per_finger_change" default="3.0" />
+  <arg name="unload_per_finger_tangential_change" default="3.0" />
+  <arg name="min_hold_sec" default="1.0" />
+
+  <node name="handover" pkg="handover" type="handover_node.py" output="screen">
+    <param name="arm" value="$(arg arm)" />
+    <param name="label" value="$(arg label)" />
+    <rosparam param="target_xyz" subst_value="true">$(arg target_xyz)</rosparam>
+    <param name="hold_sec" value="$(arg hold_sec)" />
+    <param name="release_settle_sec" value="$(arg release_settle_sec)" />
+  </node>
+
+  <include file="$(find g1_hands)/launch/auto_release_monitor.launch" if="$(arg monitor)">
+    <arg name="run_auto_release_service" value="/handover/run_auto_release" />
+    <arg name="unload_per_finger_change" value="$(arg unload_per_finger_change)" />
+    <arg name="unload_per_finger_tangential_change" value="$(arg unload_per_finger_tangential_change)" />
+    <arg name="min_hold_sec" value="$(arg min_hold_sec)" />
+  </include>
+</launch>
