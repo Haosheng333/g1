@@ -65,6 +65,16 @@ box (fallback: solved from the box's bottom row) plus half the can's height (`CL
 update it if the can changes). Other classes use the spec's plain push along
 the view ray, which from a camera looking down is biased by a few cm.
 
+A constant correction is applied to every reported point via the launch
+args `x_offset` / `y_offset` / `z_offset` (m, torso_link; param
+`~offset_xyz`). The offset is the measured error `reported - real`, and the
+node subtracts it: `real = reported - offset`. Launch defaults, set by the
+operator on 2026-10-21 from the grasp tests: x -0.005, y +0.005, z -0.035
+(so x is reported 5 mm further, y 5 mm less, z 35 mm higher than the raw
+estimate). `x_offset:=0 y_offset:=0 z_offset:=0` disables it. The viewer applies the same offset, so the window
+always shows what the service returns. Prefer fixing the calibration file
+for errors that grow with distance; the offset is for a constant residual.
+
 Depth is the median over the central 30% x 50% of the box (a single
 7x7 patch on the shiny can flickered by 2 cm between frames), and one call runs
 `frames` (default 3) consecutive synced frames and returns the per-axis median

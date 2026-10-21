@@ -25,6 +25,13 @@
   <arg name="model" default="" />
   <!-- Frames per service call (per-axis median of the successful ones). -->
   <arg name="frames" default="3" />
+  <!-- Constant correction (m, torso_link), defined as the measured error
+       reported - real; the service and the viewer SUBTRACT it:
+       real = reported - offset. Values set by the operator on 2026-10-21
+       from the grasp tests with the fitted calibration. -->
+  <arg name="x_offset" default="-0.005" />
+  <arg name="y_offset" default="0.005" />
+  <arg name="z_offset" default="-0.035" />
   <!-- Live view of what the camera sees with detections drawn on it
        (/perception/annotated_image). viewer_window opens it in an image_view
        window on this host (needs X11, which g1.sh start allows). -->
@@ -50,6 +57,7 @@
     <param name="calibration_file" value="$(arg calibration_file)" if="$(arg use_calibration_file)" />
     <param name="model" value="$(arg model)" />
     <param name="frames" value="$(arg frames)" />
+    <rosparam param="offset_xyz" subst_value="true">[$(arg x_offset), $(arg y_offset), $(arg z_offset)]</rosparam>
   </node>
 
   <node name="perception_viewer" pkg="perception" type="perception_viewer.py" output="screen" if="$(arg viewer)">
@@ -59,6 +67,7 @@
     <param name="rate" value="$(arg viewer_rate)" />
     <param name="target_label" value="$(arg viewer_target_label)" />
     <param name="show_depth" value="$(arg viewer_show_depth)" />
+    <rosparam param="offset_xyz" subst_value="true">[$(arg x_offset), $(arg y_offset), $(arg z_offset)]</rosparam>
   </node>
   <node name="perception_view_window" pkg="image_view" type="image_view" if="$(eval arg('viewer') and arg('viewer_window'))">
     <remap from="image" to="/perception/annotated_image" />

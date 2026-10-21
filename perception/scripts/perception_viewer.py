@@ -89,6 +89,7 @@ class PerceptionViewer:
         self.depth_max_m = float(rospy.get_param("~depth_max_m", 3.0))
         self.conf = float(rospy.get_param("~conf", 0.40))
         self.smoother = Smoother(max(1, int(rospy.get_param("~smooth_frames", SMOOTH_FRAMES))))
+        self.offset = np.asarray(rospy.get_param("~offset_xyz", [0.0, 0.0, 0.0]), dtype=float).reshape(3)
 
         self._K: CameraIntrinsics | None = None
         self._lock = threading.Lock()
@@ -136,8 +137,12 @@ class PerceptionViewer:
         t0 = time.time()
         bgr = image_to_array(rgb_msg, 3)
         depth_mm = image_to_array(depth_msg, 1)
-        dets = self.smoother.update(run_detection_pipeline(bgr, depth_mm, self.model, self._K, self.extrinsics,
-                                                           conf=self.conf, include_invalid_depth=True))
+        dets = run_detection_pipeline(bgr, depth_mm, self.model, self._K, self.extrinsics,
+                                      conf=self.conf, include_invalid_depth=True)
+        for d in dets:
+            if d.p_base is not None:
+                d.p_base = d.p_base - self.offset  # offset_xyz = reported - real
+        dets = self.smoother.update(dets)
         located = [d for d in dets if d.p_base is not None]
         hits = [d for d in located if d.label == self.target_label]
         age = (rospy.Time.now() - rgb_msg.header.stamp).to_sec()

@@ -40,6 +40,14 @@ class PerceptionNode:
         self.model = load_model("perception")
         self.extrinsics = load_extrinsics("perception")
         self.frames = max(1, int(rospy.get_param("~frames", DEFAULT_FRAMES)))
+        # Constant correction for every reported point, in torso_link (m),
+        # defined as the measured error (reported - real), so the node
+        # SUBTRACTS it: real = reported - offset_xyz. The viewer applies the
+        # same correction so the window shows what the service returns.
+        self.offset = np.asarray(rospy.get_param("~offset_xyz", [0.0, 0.0, 0.0]), dtype=float).reshape(3)
+        if np.any(self.offset):
+            rospy.logwarn("[perception] offset_xyz %s m (reported - real): every point is reported minus this",
+                          self.offset.tolist())
 
         self._K: CameraIntrinsics | None = None
         self._lock = threading.Lock()
@@ -131,7 +139,7 @@ class PerceptionNode:
             return GetObjectPositionResponse(
                 success=False,
                 message=f"{len(results)}/{self.frames} frames had a match: " + (failures[-1] if failures else ""))
-        xyz = np.median(np.array([[r.x, r.y, r.z] for r in results]), axis=0)
+        xyz = np.median(np.array([[r.x, r.y, r.z] for r in results]), axis=0) - self.offset
         return GetObjectPositionResponse(
             success=True, x=float(xyz[0]), y=float(xyz[1]), z=float(xyz[2]),
             frame_id=BASE_FRAME, message=f"median of {len(results)}/{self.frames} frames",
