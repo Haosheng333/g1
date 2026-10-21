@@ -37,10 +37,14 @@ Launch arm_grasp/scripts/arm_node_abs.py (node name: g1_arm_simple)
   <arg name="voxel_min_depth"                 default="0.15" />
   <arg name="voxel_max_depth"                 default="2.5" />
   <arg name="voxel_subsample_stride"          default="4" />
-  <!-- Camera extrinsic defaults mirror g1_camera/config/params.yaml
-       (base_link -> camera_link). Keeping them aligned means A* obstacles
-       land where object_detector_node places the detected object. -->
-  <arg name="voxel_camera_translation"        default="[0.0576235, 0.01753, 0.42987]" />
+  <!-- Camera extrinsics for the obstacle map. Default: the SAME calibration
+       file DIP perception uses (torso_link -> camera_color_optical_frame),
+       so A* obstacles land where perception places the detected object.
+       voxel_use_calibration_file:=false falls back to the camera_link ypr
+       mount below (g1_camera/config/params.yaml, the old D435i). -->
+  <arg name="voxel_use_calibration_file"      default="true" />
+  <arg name="voxel_calibration_file"          default="$(find perception)/config/d455_extrinsics_20261017_fitted_20261021.yaml" />
+  <arg name="voxel_camera_translation"        default="[0.0576235, 0.02753, 0.44487]" />
   <arg name="voxel_camera_rotation_ypr"       default="[0.0, 0.8307767239493009, 0.0]" />
   <!-- obstacle_frame_offset is the extra translation from the adapter's
        "root" frame (where camera_translation is measured) to the planner's
@@ -132,6 +136,7 @@ Launch arm_grasp/scripts/arm_node_abs.py (node name: g1_arm_simple)
     <param name="voxel_subsample_stride"       value="$(arg voxel_subsample_stride)" />
     <rosparam param="voxel_camera_translation"     subst_value="true">$(arg voxel_camera_translation)</rosparam>
     <rosparam param="voxel_camera_rotation_ypr"    subst_value="true">$(arg voxel_camera_rotation_ypr)</rosparam>
+    <param name="voxel_calibration_file"       value="$(arg voxel_calibration_file)" if="$(arg voxel_use_calibration_file)" />
     <rosparam param="voxel_obstacle_frame_offset"  subst_value="true">$(arg voxel_obstacle_frame_offset)</rosparam>
     <param name="voxel_defer_joint"            value="$(arg voxel_defer_joint)" />
     <param name="voxel_defer_cost_mult"        value="$(arg voxel_defer_cost_mult)" />

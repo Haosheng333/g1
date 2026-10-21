@@ -416,6 +416,7 @@ class ArmNodeAbs:
             subsample_stride=self._voxel_subsample_stride,
             camera_translation=self._voxel_camera_translation,
             camera_rotation_ypr=self._voxel_camera_rotation_ypr,
+            calibration_file=self._voxel_calibration_file,
             obstacle_frame_offset=self._voxel_obstacle_frame_offset,
             defer_joint=self._voxel_defer_joint,
             defer_cost_mult=self._voxel_defer_cost_mult,

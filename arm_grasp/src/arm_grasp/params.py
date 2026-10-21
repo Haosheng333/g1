@@ -226,6 +226,9 @@ def load_params(pkg_root: str) -> SimpleNamespace:
     p._voxel_camera_rotation_ypr = list(rospy.get_param(
         "~voxel_camera_rotation_ypr", [0.0, 0.8307767239493009, 0.0]
     ))
+    # perception's calibration file (torso_link -> camera_color_optical_frame);
+    # when set it replaces camera_translation / camera_rotation_ypr above.
+    p._voxel_calibration_file = str(rospy.get_param("~voxel_calibration_file", "") or "")
     p._voxel_obstacle_frame_offset = list(rospy.get_param(
         "~voxel_obstacle_frame_offset", [0.0, 0.0, 0.0]
     ))

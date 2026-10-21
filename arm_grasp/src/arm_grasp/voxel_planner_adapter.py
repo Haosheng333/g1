@@ -39,9 +39,13 @@ The voxel planner expects obstacles in the **torso_link** frame
 size baked into voxel_phase2_<arm>.json. We expose two configurable
 knobs so the adapter works regardless of the robot's tf tree:
 
+  * calibration_file:
+        perception's d455_extrinsics_*.yaml (torso_link ->
+        camera_color_optical_frame); when set it REPLACES the two knobs
+        below, so obstacles and detected objects share one calibration.
   * camera_translation / camera_rotation_ypr:
-        static transform from camera_link to the robot's root link
-        (same defaults as g1_camera/object_detector_node.py).
+        fallback static transform from camera_link to the robot's root
+        link (same defaults as g1_camera/object_detector_node.py).
   * obstacle_frame_offset:
         translation applied AFTER the camera→root transform, to shift
         points from the root frame into the planner's frame (torso_link).
@@ -125,6 +129,31 @@ def _euler_ypr_to_matrix(yaw, pitch, roll):
 _R_OPTICAL_TO_LINK = _euler_ypr_to_matrix(-1.5708, 0.0, -1.5708)
 
 
+def optical_to_root_from_calibration(path, expected_parent="torso_link"):
+    """(R, t) of camera_color_optical_frame in the root frame, from a
+    perception ``d455_extrinsics_*.yaml`` (its ``parent_to_color_optical``
+    block, used directly: no optical->link composition, no ypr).
+
+    This is the SAME file perception_node loads, so the obstacle map and the
+    detected object are placed with identical extrinsics. Raises ValueError
+    when the file's parent frame is not ``expected_parent`` or its rotation
+    block is not a proper rotation.
+    """
+    import yaml
+
+    with open(path) as f:
+        doc = yaml.safe_load(f)
+    block = doc["parent_to_color_optical"]
+    if block.get("parent_frame") != expected_parent:
+        raise ValueError(
+            f"{path}: parent_frame is {block.get('parent_frame')!r}, expected {expected_parent!r}")
+    M = np.asarray(block["matrix_4x4"], dtype=np.float64).reshape(4, 4)
+    R = M[:3, :3]
+    if not np.allclose(R.T @ R, np.eye(3), atol=1e-6) or abs(np.linalg.det(R) - 1.0) > 1e-6:
+        raise ValueError(f"{path}: rotation block is not a proper rotation")
+    return R.copy(), M[:3, 3].copy()
+
+
 def _imgmsg_to_numpy_depth(msg):
     """Minimal cv_bridge-free converter for 16UC1 / 32FC1 depth images.
 
@@ -158,6 +187,7 @@ class VoxelPlannerAdapter:
                  subsample_stride=4,
                  camera_translation=(0.04765, 0.0, 0.46268),
                  camera_rotation_ypr=(0.0, 0.8378, 0.0),
+                 calibration_file=None,
                  obstacle_frame_offset=(0.0, 0.0, 0.0),
                  defer_joint=2,
                  defer_cost_mult=2,
@@ -186,14 +216,27 @@ class VoxelPlannerAdapter:
         self.max_depth = float(max_depth)
         self.subsample_stride = max(1, int(subsample_stride))
 
-        yaw, pitch, roll = (float(x) for x in camera_rotation_ypr)
-        self._R_root_cam = _euler_ypr_to_matrix(yaw, pitch, roll)
-        self._t_root_cam = np.asarray(camera_translation, dtype=np.float64).reshape(3)
-        # Combined optical -> root-link.
-        self._R_root_opt = self._R_root_cam @ _R_OPTICAL_TO_LINK
-        # Camera origin coincides with camera_link origin in the optical frame,
-        # mirroring g1_camera's convention.
-        self._t_root_opt = self._t_root_cam.copy()
+        self._calibration_file = str(calibration_file) if calibration_file else ""
+        if self._calibration_file:
+            # Perception's calibration file: optical -> root directly.
+            self._R_root_opt, self._t_root_opt = optical_to_root_from_calibration(
+                self._calibration_file, expected_parent=str(obstacles_frame))
+            self._R_root_cam = self._R_root_opt @ _R_OPTICAL_TO_LINK.T
+            self._t_root_cam = self._t_root_opt.copy()
+            rospy.loginfo("[voxel_adapter] camera extrinsics from %s (optical origin %s in %s)",
+                          self._calibration_file, np.round(self._t_root_opt, 4).tolist(), obstacles_frame)
+        else:
+            yaw, pitch, roll = (float(x) for x in camera_rotation_ypr)
+            self._R_root_cam = _euler_ypr_to_matrix(yaw, pitch, roll)
+            self._t_root_cam = np.asarray(camera_translation, dtype=np.float64).reshape(3)
+            # Combined optical -> root-link.
+            self._R_root_opt = self._R_root_cam @ _R_OPTICAL_TO_LINK
+            # Camera origin coincides with camera_link origin in the optical frame,
+            # mirroring g1_camera's convention.
+            self._t_root_opt = self._t_root_cam.copy()
+            rospy.logwarn("[voxel_adapter] camera extrinsics from camera_translation/camera_rotation_ypr "
+                          "(the old D435i mount unless overridden); set ~voxel_calibration_file to use "
+                          "perception's D455 calibration")
         self._t_root_to_obstacle = np.asarray(
             obstacle_frame_offset, dtype=np.float64,
         ).reshape(3)

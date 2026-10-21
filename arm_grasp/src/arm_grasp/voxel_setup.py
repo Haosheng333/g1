@@ -32,6 +32,7 @@ def build_voxel_adapter(
     subsample_stride,
     camera_translation,
     camera_rotation_ypr,
+    calibration_file="",
     obstacle_frame_offset,
     defer_joint,
     defer_cost_mult,
@@ -80,6 +81,7 @@ def build_voxel_adapter(
             subsample_stride=subsample_stride,
             camera_translation=camera_translation,
             camera_rotation_ypr=camera_rotation_ypr,
+            calibration_file=calibration_file or None,
             obstacle_frame_offset=obstacle_frame_offset,
             defer_joint=defer_joint,
             defer_cost_mult=defer_cost_mult,
@@ -98,7 +100,8 @@ def build_voxel_adapter(
             fresh_depth_timeout_sec=fresh_depth_timeout_sec,
         )
         logger.info(
-            f"[A* backend=voxel] adapter ready: depth='{depth_topic}' "
+            f"[A* backend=voxel] adapter ready: extrinsics="
+            f"{calibration_file or 'camera_translation/camera_rotation_ypr'} depth='{depth_topic}' "
             f"info='{camera_info_topic}' "
             f"stride={subsample_stride} "
             f"depth_range=[{min_depth}, {max_depth}]"

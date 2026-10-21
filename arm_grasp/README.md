@@ -487,6 +487,16 @@ What each failure mode looks like:
 - **No cloud in RViz but log says `voxels=0`** → cloud was fully clipped out of the planner's workspace box; it's a frame-offset problem, not a depth problem.
 - **Cloud fires only on grasp calls, not continuously** → by design. Each `latest_voxel_obstacles()` publish is triggered by a plan request.
 
+### Camera extrinsics for the obstacle map
+
+The depth stream is placed in `torso_link` with the SAME calibration file
+DIP perception uses, `perception/config/d455_extrinsics_20261017_fitted_20261021.yaml`
+(`~voxel_calibration_file`, launch arg `voxel_calibration_file`,
+`voxel_use_calibration_file:=false` falls back to the old
+`voxel_camera_translation` / `voxel_camera_rotation_ypr` D435i mount). Change
+the file in both launches together; see `perception/README.md`
+"Camera extrinsics" for how it was fitted.
+
 ### Calibrating the obstacle frame
 
 If a grasp starts avoiding "obstacles" that don't exist (the robot's
