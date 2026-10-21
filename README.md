@@ -29,6 +29,7 @@ directory for two of them.
 | `hand_control/` | `hand_control` | Revo2 hand presets over the vendor SDK | services exist; untested on hardware |
 | `handover/` | `handover` | force-based pull detection | logic complete; **force schema unconfirmed** |
 | `orchestrator/` | `orchestrator` | sequences the above; implements none of them | working |
+| `voice_control/` | `g1_voice_control` | optional Vosk speech frontend to orchestrator | offline-tested; real ASR/ROS transport pending |
 | `system_bringup/` | `system_bringup` | top-level launch, `pelvis → base_link` alias | working |
 | `tools/` | — | dataset/training helpers, acceptance scripts | — |
 
@@ -190,7 +191,9 @@ leaving. Retraction after a release is refused with no override.
 
 ## Tests
 
-**729 passing, 0 failing.** No hardware, no robot, no SDK.
+The table below records the suite-level results from the last documented runs.
+They are hardware-free unless a row says otherwise; rerun them after changes
+instead of treating the historical counts as a repository-wide total.
 
 ```bash
 # cross-process ROS integration: isolated master on :11399, real orchestrator +
@@ -211,6 +214,7 @@ cd <pkg> && PYTHONPATH=src python3 -m unittest discover -s test -t .
 | `slam` | 47 passed |
 | `arm_control` | 10 passed, 1 skipped (no SDK) |
 | `perception` | 8 passed, 1 skipped, **1 blocked** (`ultralytics` absent) |
+| `g1_voice_control` | 50 passed, 1 skipped (ROS transport unavailable locally) |
 
 **16 modules blocked**, all on absent dependencies: `torch`, `trimesh`,
 `python-fcl`, `ultralytics`, `pytest`.

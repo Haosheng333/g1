@@ -1,0 +1,45 @@
+# voice_control command configuration.
+#
+# grasp_target / deliver_target feed RunRoute.srv's `target` field directly:
+# The current adapter assumes `target` is used both as the navigation waypoint
+# name and (for grasp) as the perception object label. Re-check that assumption
+# against the deployed RunRoute.srv and sequencer before enabling real dispatch.
+# Leave a value unset (null/empty) rather than
+# guessing a destination or label the orchestrator was never told about;
+# dispatch.py then refuses the command and reports the gap instead of
+# dispatching with an invented target.
+
+# Keep targets empty until they have been checked against the actual
+# orchestrator/perception/navigation configuration. To enable a route, add
+# the exact deployed value to its valid_* allowlist and select it below.
+valid_grasp_targets: []
+grasp_target: null
+
+valid_deliver_targets: []
+deliver_target: null
+
+# Exact whole-utterance allowlist. A deployment may add synonyms, but each
+# phrase still maps to exactly one command and is checked for duplicates by
+# CommandMatcher at startup.
+phrases:
+  grasp:
+    - "开始抓取"
+    - "start grasping"
+  deliver:
+    - "开始递送"
+    - "start delivery"
+  status:
+    - "查看状态"
+    - "status"
+  cancel:
+    - "取消任务"
+    - "cancel task"
+  confirm:
+    - "确认执行"
+    - "confirm"
+
+# Seconds a task-start command (grasp/deliver) stays pending before it
+# expires and must be re-spoken. Chosen to be long enough for a person to say
+# "确认执行" / "confirm" deliberately, short enough that a stale pending
+# command does not linger and get confirmed by surprise later.
+confirmation_window_sec: 8.0

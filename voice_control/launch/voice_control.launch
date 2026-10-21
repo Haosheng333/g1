@@ -1,0 +1,28 @@
+<launch>
+  <!-- Standalone launch file, also included by full_system.launch only when
+       voice_control:=true is passed explicitly. -->
+
+  <arg name="input_mode" default="microphone" />            <!-- "microphone" | "wav" -->
+  <arg name="vosk_config" default="$(find g1_voice_control)/config/vosk.yaml" />
+  <arg name="vosk_model_path" default="" />                   <!-- empty = use vosk_config -->
+  <arg name="sample_rate" default="" />                       <!-- empty = use vosk_config -->
+  <arg name="language" default="" />                          <!-- empty = use vosk_config -->
+  <arg name="input_device" default="" />                     <!-- empty = system default; see scripts/list_microphones.py -->
+  <arg name="wav_path" default="" />                          <!-- required when input_mode:=wav -->
+  <arg name="dry_run_backend" default="true" />                <!-- true = match/confirm only, no orchestrator calls -->
+  <arg name="commands_config" default="$(find g1_voice_control)/config/commands.yaml" />
+  <arg name="service_wait_timeout_s" default="10.0" />
+
+  <node name="voice_control_node" pkg="g1_voice_control" type="voice_control_node.py" output="screen">
+    <param name="input_mode" value="$(arg input_mode)" />
+    <param name="vosk_config" value="$(arg vosk_config)" />
+    <param name="vosk_model_path" value="$(arg vosk_model_path)" />
+    <param name="sample_rate" value="$(arg sample_rate)" />
+    <param name="language" value="$(arg language)" />
+    <param name="input_device" value="$(arg input_device)" />
+    <param name="wav_path" value="$(arg wav_path)" />
+    <param name="dry_run_backend" value="$(arg dry_run_backend)" />
+    <param name="commands_config" value="$(arg commands_config)" />
+    <param name="service_wait_timeout_s" value="$(arg service_wait_timeout_s)" />
+  </node>
+</launch>

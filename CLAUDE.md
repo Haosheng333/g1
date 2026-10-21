@@ -95,6 +95,14 @@ bitmaps, shared, never copied). Grasp a typed `torso_link` point with
 g1_intellect on PC2 (`rosrun g1_hands start_remote_hands.sh`). See
 `arm_grasp/README.md`.
 
+`voice_control/` (package `g1_voice_control`) is built through the tracked
+relative symlink `g1_ws/src/g1_voice_control -> ../../voice_control`. It is an
+optional ROS1 frontend to the orchestrator and remains disabled by default in
+`full_system.launch`. Vosk models live under `voice_control/models/` (gitignored)
+and are downloaded explicitly; never add model weights to Git. Install its
+Python/audio dependencies only inside the designated ROS Noetic container, not
+into the host Python or another ROS environment. See `voice_control/README.md`.
+
 `perception/` is still not part of `g1_ws` and is not referenced by any launch
 file. Leave it unbuilt unless asked.
 

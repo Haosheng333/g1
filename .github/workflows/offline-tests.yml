@@ -27,6 +27,7 @@ jobs:
           arm_control/src arm_control/scripts arm_control/test
           handover/src handover/scripts handover/test
           orchestrator/src orchestrator/scripts orchestrator/test
+          voice_control/src voice_control/scripts voice_control/test
       - name: Launch files and package manifests are well-formed XML
         run: |
           python - <<'PY'
@@ -41,7 +42,7 @@ jobs:
         run: |
           python - <<'PY'
           import glob, yaml
-          for f in glob.glob("navigation/config/*.yaml") + glob.glob("slam/config/*.yaml") + ["navigation/rviz/navigation.rviz"]:
+          for f in glob.glob("navigation/config/*.yaml") + glob.glob("slam/config/*.yaml") + glob.glob("voice_control/config/*.yaml") + ["navigation/rviz/navigation.rviz"]:
               yaml.safe_load(open(f))
           print("yaml ok")
           PY
@@ -62,6 +63,13 @@ jobs:
       - name: orchestrator tests (routes, preflight, saw_active guard, release ownership)
         working-directory: orchestrator/test
         run: python -m unittest discover -s . -v
+
+      - name: voice control tests (parser, confirmation, dry-run, request mapping)
+        working-directory: voice_control
+        run: PYTHONPATH=src python -m unittest discover -s test -p "test_*.py" -v
+
+      - name: voice control repository integration contract
+        run: python -m unittest tools.test_voice_control_repository -v
 
       - name: perception / arm_control import without their optional heavy deps
         run: |

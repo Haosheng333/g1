@@ -1,0 +1,6 @@
+<launch>
+  <!-- rostest launch wrapper for test_ros_transport.py. Run with:
+       rostest g1_voice_control test_ros_transport.test
+       Untested here (no ROS); verify it actually runs on the real workspace. -->
+  <test test-name="test_ros_transport" pkg="g1_voice_control" type="test_ros_transport.py" />
+</launch>

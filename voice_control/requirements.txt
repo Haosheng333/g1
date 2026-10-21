@@ -1,0 +1,13 @@
+# Audio/ASR dependencies -- imported lazily (see src/g1_voice_control/asr_adapter.py),
+# so commands.py/dispatch.py's offline tests need none of this.
+#
+# Target: ROS1 Noetic's Python 3.8. Verify these resolve on the actual
+# machine's architecture before relying on this list (e.g. `pip install
+# vosk==0.3.45 sounddevice==0.4.6 --dry-run` or equivalent); vosk ships
+# prebuilt wheels for common Linux x86_64/aarch64 and macOS targets, but not
+# every architecture, and sounddevice needs PortAudio available on the
+# system (`apt install portaudio19-dev` on Debian/Ubuntu if the wheel build
+# or import fails).
+vosk>=0.3.45,<0.4
+sounddevice>=0.4.6,<0.5
+pyyaml>=5.3
