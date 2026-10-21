@@ -12,11 +12,18 @@ perception/
 ├── package.xml, CMakeLists.txt, setup.py   # catkin package files
 ├── srv/GetObjectPosition.srv               # the service contract
 ├── src/perception/m1_perception.py         # detection + geometry algorithm, no ROS dependency
+├── src/perception/ros_image.py             # sensor_msgs/Image -> numpy (replaces cv_bridge)
 ├── scripts/perception_node.py              # rospy service wrapper (the ROS node)
+├── scripts/perception_viewer.py            # live "what the robot sees" view, /perception/annotated_image
+├── src/perception/overlay.py               # draws boxes / depth / torso_link xyz (viewer + demo)
 ├── scripts/demo_m1.py                      # run the algorithm on any photo, no ROS needed
 ├── launch/perception.launch                # brings up the RealSense driver + this node
+├── config/camera_mount.yaml                # torso_link -> camera_link mount the node loads by default
+├── config/d455_extrinsics_*.yaml           # ChArUco candidate(s) from ~/Workspace/d455_calib_ws
 ├── models/bottle_finetuned.pt              # fine-tuned detector (see "Detector" below)
-├── test/test_m1_perception.py              # unit tests
+├── test/test_m1_perception.py              # unit tests (geometry + end-to-end on a photo)
+├── test/test_node_helpers.py               # image decoding, calibration loader
+├── test/test_lazy_import.py                # `import perception` must not pull in torch
 ├── test/mujoco_validation.py               # validation against simulated RGB-D (one worked example)
 └── test/mujoco_accuracy_eval.py            # same, batched over a grid of positions (accuracy numbers)
 ```
@@ -49,12 +56,28 @@ else:
 rosservice call /perception/get_object_position "{label: 'bottle', index: 0}"
 ```
 
-This node does not retry -- one call = one fresh camera frame = one
-detection pass. Retry logic is the caller's responsibility.
+The point is the object's **geometric centre**. For `bottle` (the 14 cm
+can, an upright cylinder) that is exact by construction: the radius is pushed
+horizontally and z is the table height read from the depth just below the
+box (fallback: solved from the box's bottom row) plus half the can's height (`CLASS_HEIGHT_M` in `m1_perception.py`, so
+update it if the can changes). Other classes use the spec's plain push along
+the view ray, which from a camera looking down is biased by a few cm.
+
+Depth is the median over the central 30% x 50% of the box (a single
+7x7 patch on the shiny can flickered by 2 cm between frames), and one call runs
+`frames` (default 3) consecutive synced frames and returns the per-axis median
+of the successful ones, so a call takes ~0.2 s at 15 fps. `frames:=1` restores
+one frame per call. This node does not retry a failed call; that is the caller's responsibility. `index` must be
+>= 0. Any internal error comes back as `success=false` with the exception in
+`message`, never as a ROS service exception.
 
 Subscribes to (from the RealSense driver, `align_depth:=true`):
 `/camera/color/image_raw`, `/camera/aligned_depth_to_color/image_raw`
-(16UC1, mm), `/camera/color/camera_info`.
+(16UC1, mm), `/camera/color/camera_info`. RGB and depth are paired by an
+`ApproximateTimeSynchronizer` (50 ms slop); a call waits up to 1 s for the
+first pair captured after the request. Images are decoded with numpy
+(`ros_image.py`), not cv_bridge, because Noetic's cv_bridge is built against
+numpy 1 and crashes under the container's numpy 2.
 
 The message is byte-identical to g1_intellect's `g1_camera/GetObjectPosition`
 (same md5), so `arm_grasp`'s `grasp_bottle` and g1_intellect's `main_process`
@@ -62,34 +85,99 @@ can call this node unchanged.
 
 ### Camera extrinsics
 
-The `torso_link -> camera_link` mount is the one calibrated on this robot in
-g1_intellect (`g1_camera/config/params.yaml`, where the same physical frame is
-labelled `base_link`), with the same parameter keys:
+Default: `config/d455_extrinsics_20261017_fitted_20261021.yaml`: the ChArUco
+calibration of the **D455** done on this robot on 2026-10-17 with
+`~/Workspace/d455_calib_ws` (`torso_link -> camera_color_optical_frame`, used
+directly), refitted on 2026-10-21 to three facts on the standing robot: the
+desk in view must be level in `torso_link` (pitch +1.9°), the desk is at
+-0.050 m by tape (camera 0.7 cm lower), and a can's centre is at x = 0.390 m
+by tape (camera 1.0 cm further forward). With it the desk is level to 0.04°
+and reads -0.051 to -0.052 m from 0.3 to 0.6 m, and the can centre comes out
+at (0.392, 0.028, 0.022). The raw ChArUco file read the same can 2 cm high
+and 3 cm far. **Caveat:** the robot's lean relative to the desk differed by
+about 2° between two sessions, which is 1 to 1.5 cm at 0.45 m; a fixed
+calibration cannot follow the stance, so re-run the levelling check below when
+accuracy matters, and treat the orchestrator's `perception_extrinsics` blocker
+as cleared only for the standing pose it was fitted in.
 
-| Param | Default |
-|---|---|
-| `~camera_translation` | `[0.0576235, 0.02753, 0.44487]` m |
-| `~camera_rotation_ypr` | `[0.0, 0.8307767239493009, 0.0]` rad (yaw, pitch, roll) |
+| Set | Camera | torso_link -> camera | pitch down | Select with |
+|---|---|---|---|---|
+| `config/d455_extrinsics_20261017_fitted_20261021.yaml` (**default**) | D455, fitted | (0.118, -0.015, 0.406) m to the optical frame | 67.7° | `calibration_file:=<file>` |
+| `config/d455_extrinsics_20261017T074044_928552Z.yaml` | D455, raw ChArUco | same | 65.8° | `calibration_file:=<file>` |
+| `config/camera_mount.yaml` | old D435i (g1_intellect `g1_camera/config/params.yaml`) | (0.058, 0.028, 0.445) m to camera_link | 47.6° | `use_calibration_file:=false` |
 
+The D435i set differs by about 30 cm at 1 m and must not be used with the
+D455.
+
+**Levelling check.** Back-project the depth image into `torso_link` with the
+candidate extrinsics and fit a plane to the desk: it must be level (the robot
+standing, waist at zero). A tilt about y is a pitch error; the desk height at
+the can must match a tape measure. `rosrun perception desk_level_check.py` does this against the running camera
+with the node's calibration (or `--calibration-file F`). A new calibration from the ChArUco tool is dropped in by pointing
+`calibration_file:=` at it (the loader checks `parent_frame: torso_link` and a
+proper rotation). arm_grasp's TF stub in `arm_node_abs.launch` mirrors the
+D455 file's `parent_to_camera_link` block; update it when the file changes.
 The camera is rigidly mounted on `torso_link`, so points are correct at every
 waist angle. A constant offset in detected positions is a translation error; a
-distance-dependent one is a rotation error, so retune the pitch.
+distance-dependent one is a rotation error.
+
+## Seeing what the robot sees
+
+`perception.launch` also starts `perception_viewer.py` (`viewer:=true`,
+default) and opens its output in an `image_view` window on this host
+(`viewer_window:=true`, default; needs X11, which `g1.sh start` allows).
+The window shows the camera image with every detection drawn on it, and the
+depth image with the same boxes on the right:
+
+- green box: the label being looked for (`viewer_target_label`, default
+  `bottle`), with confidence, sampled depth and the object centre in
+  `torso_link`
+- yellow box: another class the detector knows
+- red box: a detection whose depth sample was missing or out of range, i.e.
+  one the service would NOT return
+- header line: how many targets were found, how many boxes had depth, and the
+  frame age (large = the camera stream is stale)
+- the xyz shown is the median of the last 5 frames of that object
+  (`~smooth_frames`), like the service's own multi-frame median; the raw
+  per-frame value moves by about 1 cm on a shiny can because of depth noise
+
+```bash
+roslaunch perception perception.launch                               # service + viewer + window
+roslaunch perception perception.launch viewer_target_label:=cup model:=yolov8n.pt
+roslaunch perception perception.launch viewer_window:=false          # publish only, no window
+rosrun image_view image_view image:=/perception/annotated_image      # open the window later
+rosrun rqt_image_view rqt_image_view /perception/annotated_image     # or this; or an RViz Image display
+```
+
+The viewer runs its own detector pass at `viewer_rate` Hz (default 5) and
+never touches the service node, so it cannot delay
+`/perception/get_object_position`. Without the camera, the bench stand-in
+`test/fake_camera_publisher.py --image photo.jpg` feeds it a photo.
 
 ## Build & run
 
+The package is part of `g1_ws` (symlink `g1_ws/src/perception -> ../../perception`)
+and builds with the rest of DIP inside the g1_intellect container; see the
+repo-level `CLAUDE.md` for the `catkin_make` line. ultralytics, torch and
+numpy are already in the container's conda env.
+
 ```bash
-cd ~/catkin_ws/src
-pip install -r perception/requirements.txt
-cd ~/catkin_ws
-catkin build perception
-source devel/setup.bash
+source ~/Workspace/DIP/g1_ws/devel/setup.bash --extend
 roslaunch perception perception.launch                    # camera driver on PC2
 roslaunch perception perception.launch local_camera:=true # camera driver on this host
+rosservice call /perception/get_object_position "{label: 'bottle', index: 0}"
 ```
 
-On the robot the D435i is wired to PC2; start its driver there with
+Stop it with Ctrl+C in the launch shell. If nodes are left behind (ROS's
+Python nodes are named `python3`, so `killall roslaunch` does NOT find them):
+
+```bash
+rosrun perception stop_perception.sh
+```
+
+On the robot the RealSense is wired to PC2; start its driver there with
 g1_intellect's `rosrun g1_perception start_remote_camera.sh` (it publishes the
-same topics).
+same topics, 1280x720 colour with aligned depth).
 
 ## Testing
 
@@ -98,13 +186,16 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
 PYTHONPATH=src python3 test/test_m1_perception.py
+PYTHONPATH=src python3 -m unittest discover -s test -p 'test_*.py' -v
 PYTHONPATH=src python3 scripts/demo_m1.py --image test/data/sample_remote.png --label remote --depth 1.4
+# (the fine-tuned model only knows "bottle"; for any other label the demo
+#  switches to the stock COCO yolov8n.pt by itself)
 PYTHONPATH=src python3 test/mujoco_validation.py       # needs `pip install mujoco`
 PYTHONPATH=src python3 test/mujoco_accuracy_eval.py    # same, batched -- accuracy numbers below
 ```
 
 **Accuracy** (`mujoco_accuracy_eval.py`, simulated RGB-D with known ground
-truth, current camera mount, spec's own bottle-radius approximation): across
+truth, the VisualMimic head-camera mount -- 46° pitch, close to the D435i default -- and the spec's own bottle-radius approximation): across
 a grid of table positions 0.7-1.0 m in front of the robot and ±0.15 m
 side-to-side (12 trials, all fully in frame) -- **mean error 1.46 cm, std
 0.28 cm, range 1.07-1.90 cm, 12/12 under the spec's 2 cm/1 m bar**. Beyond
@@ -139,11 +230,12 @@ cp runs/bottle_detect/weights/best.pt perception/models/bottle_finetuned.pt
 
 ## Known limitations
 
-- Not tested with ROS or a real RealSense (no ROS support on this dev
-  machine) -- `perception_node.py` only checked for syntax errors.
-- Camera extrinsics are g1_intellect's on-robot calibration and have not
-  yet been checked from this node against a tape-measured object; the
-  orchestrator keeps `perception_extrinsics` as a grasp blocker until they are.
+- `perception_node.py` has not yet run against the real RealSense; its
+  helpers (`ros_image.py`, calibration loader) are unit-tested and it imports
+  cleanly inside the container.
+- The default D455 extrinsics are a ChArUco result not yet checked against a
+  tape-measured object from this node; see "Camera extrinsics". The
+  orchestrator keeps `perception_extrinsics` as a grasp blocker until then.
 - `CLASS_RADIUS_M`'s `"bottle"` entry is measured (a real can, see
   "Detector"); `"cup"`/`"remote"`/the default are still unverified
   placeholders for the stock detector.

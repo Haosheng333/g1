@@ -95,8 +95,12 @@ bitmaps, shared, never copied). Grasp a typed `torso_link` point with
 g1_intellect on PC2 (`rosrun g1_hands start_remote_hands.sh`). See
 `arm_grasp/README.md`.
 
-`perception/` is still not part of `g1_ws` and is not referenced by any launch
-file. Leave it unbuilt unless asked.
+`perception/` (package `perception`, node `perception_node.py`, service
+`/perception/get_object_position` in `torso_link`) is built in `g1_ws` through
+`g1_ws/src/perception -> ../../perception` and started by
+`system_bringup/launch/manipulation.launch perception:=true`. Its default
+extrinsics are the D455 ChArUco calibration in `perception/config/`, still to
+be confirmed with a tape measure (see `perception/README.md`).
 
 ## Run (navigation)
 

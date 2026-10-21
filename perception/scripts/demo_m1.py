@@ -28,6 +28,7 @@ from perception.m1_perception import (
     handle_get_object_position,
     run_detection_pipeline,
 )
+from perception.overlay import draw_detections
 
 # Fine-tuned on real captured video of the actual target object (a drink
 # can, labeled "bottle" -- see CLASS_RADIUS_M's comment in m1_perception.py).
@@ -37,7 +38,8 @@ DEFAULT_MODEL = Path(__file__).resolve().parent.parent / "models" / "bottle_fine
 def main() -> None:
     parser = argparse.ArgumentParser(description="Interactive Module 1 perception demo")
     parser.add_argument("--image", required=True, help="Path to an RGB photo")
-    parser.add_argument("--label", default="", help="COCO class to look for (empty = show all)")
+    parser.add_argument("--label", default="", help="class to look for (empty = show all). The fine-tuned "
+                        "default model only knows 'bottle'; any other label switches to the stock COCO yolov8n.pt")
     parser.add_argument("--index", type=int, default=0, help="Which match to return (0-based)")
     parser.add_argument("--depth", type=float, default=1.0, help="Synthetic flat depth plane, meters")
     parser.add_argument("--depth-image", default=None, help="Real 16-bit depth PNG (millimeters) instead")
@@ -79,8 +81,13 @@ def main() -> None:
     elif DEFAULT_MODEL.exists():
         model_path = str(DEFAULT_MODEL)
     else:
+        print(f"[warn] {DEFAULT_MODEL} missing: using stock yolov8n.pt, which detects the can poorly")
         model_path = "yolov8n.pt"
     model = YOLO(model_path)
+    if not args.model and args.label and args.label not in model.names.values():
+        print(f"[info] {Path(model_path).name} has no class {args.label!r} (it knows {list(model.names.values())}); "
+              "using stock yolov8n.pt")
+        model = YOLO("yolov8n.pt")
 
     if not args.label:
         detections = run_detection_pipeline(rgb, depth_mm, model, K, extrinsics, conf=args.conf)
@@ -96,18 +103,10 @@ def main() -> None:
         else:
             print(f"success=False  message={result.message!r}")
 
-    # Re-run once more to get pixel-space boxes for drawing (run_detection_pipeline
-    # only returns base-frame xyz, not the original bbox pixels).
-    preview = rgb.copy()
-    result_boxes = model.predict(rgb, conf=args.conf, verbose=False)[0]
-    for box in result_boxes.boxes:
-        label = result_boxes.names[int(box.cls.item())]
-        x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-        color = (0, 255, 0) if label == args.label else (0, 0, 255)
-        cv2.rectangle(preview, (x1, y1), (x2, y2), color, 2)
-        cv2.putText(preview, f"{label} {box.conf.item():.2f}", (x1, max(0, y1 - 6)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-
+    # Draw every box (including ones without valid depth, in red) with the
+    # same overlay the live viewer uses.
+    all_dets = run_detection_pipeline(rgb, depth_mm, model, K, extrinsics, conf=args.conf, include_invalid_depth=True)
+    preview = draw_detections(rgb, all_dets, target_label=args.label)
     out_path = Path(args.out) if args.out else Path(args.image).with_name(Path(args.image).stem + "_preview.jpg")
     cv2.imwrite(str(out_path), preview)
     print(f"\n[saved] annotated preview -> {out_path}")

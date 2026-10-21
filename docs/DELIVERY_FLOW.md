@@ -168,6 +168,9 @@ convention**, either by aligning the two files or by applying a declared,
 tested offset between them. Until then this stays a preflight blocker.
 
 **(c) A separate, independent requirement — perception's moving camera.**
+*Superseded 2026-10: perception now reports in `torso_link`, the frame the camera is mounted on, so the
+zero-waist limitation below no longer applies. What is still open is which extrinsics values are right
+(`perception/README.md`, "Camera extrinsics"). Kept for history.*
 This is *not* satisfied by resolving (a) or (b): even with both URDFs aligned
 and the conversion implemented, the input to that conversion would still be
 wrong whenever the waist is turned.

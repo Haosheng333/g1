@@ -99,14 +99,15 @@ Launch arm_grasp/scripts/arm_node_abs.py (node name: g1_arm_simple)
   <arg name="publish_tf_stubs"                default="true" />
   <arg name="tf_root_frame"                   default="base_link" />
   <arg name="tf_camera_frame"                 default="camera_link" />
-  <!-- Values mirror g1_camera/config/params.yaml so TF matches the
-       extrinsics the perception stack already assumes. -->
-  <arg name="tf_camera_translation_x"         default="0.0576235" />
-  <arg name="tf_camera_translation_y"         default="0.01753" />
-  <arg name="tf_camera_translation_z"         default="0.42987" />
-  <arg name="tf_camera_yaw"                   default="0.0" />
-  <arg name="tf_camera_pitch"                 default="0.8307767239493009" />
-  <arg name="tf_camera_roll"                  default="0.0" />
+  <!-- Values mirror the parent_to_camera_link block of DIP perception's
+       default D455 calibration (perception/config/d455_extrinsics_20261017_fitted_20261021.yaml)
+       so TF matches the extrinsics perception uses. Update together. -->
+  <arg name="tf_camera_translation_x"         default="0.11805749196958046" />
+  <arg name="tf_camera_translation_y"         default="0.044449725809650356" />
+  <arg name="tf_camera_translation_z"         default="0.4058109409218396" />
+  <arg name="tf_camera_yaw"                   default="0.012757363749201653" />
+  <arg name="tf_camera_pitch"                 default="1.1818472783816647" />
+  <arg name="tf_camera_roll"                  default="0.010909863411045165" />
 
   <node pkg="arm_grasp"
         type="arm_node_abs.py"
