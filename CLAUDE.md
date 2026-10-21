@@ -92,7 +92,7 @@ ported into DIP, node `g1_arm_simple`) is built the same way through
 symlink into `../../g1_intellect/g1_arm_abs/models` (weights + 28 GB voxel
 bitmaps, shared, never copied). Grasp a typed `torso_link` point with
 `rosrun arm_grasp grasp_point.py plan|grasp X Y Z`; hands come from
-g1_intellect on PC2 (`rosrun g1_hands start_remote_hands.sh`). See
+g1_intellect on PC2 (`rosrun arm_grasp start_remote_hands.sh`). See
 `arm_grasp/README.md`.
 
 `perception/` (package `perception`, node `perception_node.py`, service

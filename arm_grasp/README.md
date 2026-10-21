@@ -69,8 +69,10 @@ export G1_NETWORK_INTERFACE=eno1
 ## Grasp a typed point (no camera)
 
 Coordinates are `torso_link`: x forward, y left, z up (m). The grasp gate is
-`x <= 0.39`, `z >= -0.02`. Hands come from g1_intellect on PC2
-(`rosrun g1_hands start_remote_hands.sh`).
+`x <= 0.39`, `z >= -0.02`. The hands are g1_intellect's `g1_hands` nodes on
+PC2; start them from here with `rosrun arm_grasp start_remote_hands.sh`
+(a DIP copy of g1_intellect's script; `scripts/start_remote_hands.sh`), then
+check `rosservice list | grep g1_hand_` shows BOTH sides.
 
 ```bash
 roslaunch arm_grasp arm_node_abs.launch network_interface:=enp196s0
