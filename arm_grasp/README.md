@@ -70,8 +70,8 @@ export G1_NETWORK_INTERFACE=eno1
 
 Coordinates are `torso_link`: x forward, y left, z up (m). The grasp gate is
 `x <= 0.39`, `z >= -0.02`. The hands are g1_intellect's `g1_hands` nodes on
-PC2; start them from here with `rosrun arm_grasp start_remote_hands.sh`
-(a DIP copy of g1_intellect's script; `scripts/start_remote_hands.sh`), then
+PC2; start them from here with `rosrun hand_control start_remote_hands.sh`
+(a DIP copy of g1_intellect's script, in `hand_control/scripts/`), then
 check `rosservice list | grep g1_hand_` shows BOTH sides.
 
 ```bash

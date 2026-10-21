@@ -18,9 +18,9 @@
 # the new one fails auto-detection).
 #
 # Usage
-#   rosrun arm_grasp start_remote_hands.sh                         # Ctrl+C stops the hands
-#   rosrun arm_grasp start_remote_hands.sh bringup_left_hand:=false
-#   G1_HAND_RIGHT_PORT=/dev/ttyUSB2 rosrun arm_grasp start_remote_hands.sh
+#   rosrun hand_control start_remote_hands.sh                         # Ctrl+C stops the hands
+#   rosrun hand_control start_remote_hands.sh bringup_left_hand:=false
+#   G1_HAND_RIGHT_PORT=/dev/ttyUSB2 rosrun hand_control start_remote_hands.sh
 # Extra arguments are appended to the remote roslaunch verbatim and override
 # the per-side defaults below (roslaunch lets the last occurrence win).
 set -euo pipefail

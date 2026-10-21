@@ -41,8 +41,6 @@ include_directories(
   ${catkin_INCLUDE_DIRS}
 )
 
-install(PROGRAMS scripts/start_remote_hands.sh DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
-
 catkin_install_python(PROGRAMS
   scripts/arm_node_abs.py
   scripts/fetch_weights.py

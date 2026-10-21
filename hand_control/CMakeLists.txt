@@ -12,3 +12,6 @@ catkin_install_python(PROGRAMS scripts/hand_node.py
 
 install(DIRECTORY launch config
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION})
+
+# Starts g1_intellect's g1_hands Revo2 nodes on PC2 over SSH (see README).
+install(PROGRAMS scripts/start_remote_hands.sh DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
