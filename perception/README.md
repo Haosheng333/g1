@@ -15,6 +15,8 @@ perception/
 ├── src/perception/ros_image.py             # sensor_msgs/Image -> numpy (replaces cv_bridge)
 ├── scripts/perception_node.py              # rospy service wrapper (the ROS node)
 ├── scripts/perception_viewer.py            # live "what the robot sees" view, /perception/annotated_image
+├── scripts/start_remote_camera.sh          # start the RealSense driver on PC2 over SSH
+├── scripts/stop_perception.sh              # kill everything perception.launch started
 ├── src/perception/overlay.py               # draws boxes / depth / torso_link xyz (viewer + demo)
 ├── scripts/demo_m1.py                      # run the algorithm on any photo, no ROS needed
 ├── launch/perception.launch                # brings up the RealSense driver + this node
@@ -74,8 +76,12 @@ one frame per call. This node does not retry a failed call; that is the caller's
 Subscribes to (from the RealSense driver, `align_depth:=true`):
 `/camera/color/image_raw`, `/camera/aligned_depth_to_color/image_raw`
 (16UC1, mm), `/camera/color/camera_info`. RGB and depth are paired by an
-`ApproximateTimeSynchronizer` (50 ms slop); a call waits up to 1 s for the
-first pair captured after the request. Images are decoded with numpy
+`ApproximateTimeSynchronizer` (100 ms slop); a call waits up to 1 s for the
+first pair newer than the latest one it had when the call arrived. Freshness
+is judged by frame stamps relative to each other, never against this
+machine's clock: with the camera on PC2 the stamps follow PC2's clock, which
+was 7 minutes off on 2026-10-21. The node logs a warning when stamps are more
+than 0.5 s from local time, and keeps working. Images are decoded with numpy
 (`ros_image.py`), not cv_bridge, because Noetic's cv_bridge is built against
 numpy 1 and crashes under the container's numpy 2.
 
@@ -172,12 +178,27 @@ Stop it with Ctrl+C in the launch shell. If nodes are left behind (ROS's
 Python nodes are named `python3`, so `killall roslaunch` does NOT find them):
 
 ```bash
-rosrun perception stop_perception.sh
+rosrun perception stop_perception.sh          # perception nodes, window, local driver only
+rosrun perception stop_perception.sh --all    # also roscore and the PC2 camera session
 ```
 
-On the robot the RealSense is wired to PC2; start its driver there with
-g1_intellect's `rosrun g1_perception start_remote_camera.sh` (it publishes the
-same topics, 1280x720 colour with aligned depth).
+It never touches other packages' launches, and without `--all` (or
+`--with-master` / `--with-remote-camera`) it leaves `roscore` and the PC2
+camera alone, since other terminals usually own them.
+
+On the robot the RealSense is wired to PC2. With `roscore` already running
+here in a shell where the robot cable was up (so `ROS_IP` points at the
+robot interface), start the driver on PC2 over SSH with:
+
+```bash
+rosrun perception start_remote_camera.sh        # Ctrl+C stops it
+```
+
+It publishes the same topics as `local_camera:=true` (1280x720 colour,
+aligned depth, 15 fps). PC2 details come from `G1_PC2_IP` / `G1_PC2_USER` /
+`G1_PC2_PASS` (defaults: the lab robot). Sync PC2's clock first
+(g1_intellect `scripts/setup_remote_timesync.sh`, once per boot) or the
+viewer's frame age drifts and the RGB/depth synchronizer drops pairs.
 
 ## Testing
 

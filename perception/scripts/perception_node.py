@@ -29,7 +29,10 @@ WAIT_TIMEOUT_S = 1.0
 #: of the successful ones is returned (at 15 fps, 3 frames ~ 0.2 s).
 DEFAULT_FRAMES = 3
 #: RGB and aligned depth are paired by ApproximateTimeSynchronizer within this.
-SYNC_SLOP_S = 0.05
+#: 0.1 s: over the PC2 link the two streams arrive at different rates
+#: (~9 and ~8 Hz) with stamp gaps up to ~70 ms; the scene is static during a
+#: call, so a looser pairing costs nothing.
+SYNC_SLOP_S = 0.10
 
 
 class PerceptionNode:
@@ -60,13 +63,24 @@ class PerceptionNode:
             self._pair = (rgb_msg, depth_msg)
         self._pair_event.set()
 
-    def _fresh_pair(self, not_before: rospy.Time, timeout: float) -> tuple[Image, Image] | None:
-        """Return the first RGB/depth pair captured after `not_before`."""
+    def _latest_stamp(self):
+        with self._lock:
+            return self._pair[0].header.stamp if self._pair is not None else None
+
+    def _fresh_pair(self, after: "rospy.Time | None", timeout: float) -> tuple[Image, Image] | None:
+        """Return the first RGB/depth pair whose stamp is newer than `after`.
+
+        `after` is the stamp of the latest pair at request time (None if no
+        pair yet), NOT the workstation clock: with the camera on PC2 the frame
+        stamps follow PC2's clock, and an offset of even a second would make
+        a wall-clock comparison wait forever while the viewer happily shows
+        the stream. The timeout is measured on this machine's clock.
+        """
         deadline = rospy.Time.now() + rospy.Duration(timeout)
         while not rospy.is_shutdown():
             with self._lock:
                 pair = self._pair
-            if pair is not None and pair[0].header.stamp >= not_before:
+            if pair is not None and (after is None or pair[0].header.stamp > after):
                 return pair
             remaining = (deadline - rospy.Time.now()).to_sec()
             if remaining <= 0:
@@ -88,16 +102,20 @@ class PerceptionNode:
         if req.index < 0:
             return GetObjectPositionResponse(success=False, message=f"index must be >= 0, got {req.index}")
 
-        not_before = rospy.Time.now()
+        after = self._latest_stamp()  # only frames captured after this call started
         results, failures = [], []
         for _ in range(self.frames):
-            pair = self._fresh_pair(not_before, WAIT_TIMEOUT_S)
+            pair = self._fresh_pair(after, WAIT_TIMEOUT_S)
             if pair is None:
-                failures.append(f"no synchronized RGB/depth frame within {WAIT_TIMEOUT_S:.1f}s "
+                failures.append(f"no new synchronized RGB/depth pair within {WAIT_TIMEOUT_S:.1f}s "
                                 f"(slop {SYNC_SLOP_S:.2f}s); is the RealSense driver running with align_depth?")
                 break
             rgb_msg, depth_msg = pair
-            not_before = rgb_msg.header.stamp + rospy.Duration(0, 1)  # next call: a newer frame
+            after = rgb_msg.header.stamp  # next iteration: a newer frame
+            skew = (rospy.Time.now() - rgb_msg.header.stamp).to_sec()
+            if abs(skew) > 0.5:
+                rospy.logwarn_throttle(10.0, "[perception] frame stamp is %.2f s from this machine's clock: "
+                                       "PC2 clock not synced? (frames are still used)", skew)
             rgb = image_to_array(rgb_msg, 3)
             depth_mm = image_to_array(depth_msg, 1)
             if rgb.shape[:2] != depth_mm.shape[:2]:

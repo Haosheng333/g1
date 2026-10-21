@@ -30,6 +30,7 @@ catkin_install_python(PROGRAMS
   scripts/demo_m1.py
   test/fake_camera_publisher.py
   scripts/stop_perception.sh
+  scripts/start_remote_camera.sh
   test/desk_level_check.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

@@ -1,9 +1,9 @@
 <launch>
   <!-- The RealSense (D455; earlier docs said D435i) is wired to G1 PC2, so
-       on the robot its driver is started there (g1_intellect:
-       `rosrun g1_perception start_remote_camera.sh`) and publishes the same
-       topics. local_camera:=true starts it on this host instead (aligned
-       depth is required for the back-projection). -->
+       on the robot its driver is started there with
+       `rosrun perception start_remote_camera.sh` (same stream settings as
+       below) and publishes the same topics. local_camera:=true starts it on
+       this host instead (aligned depth is required for the back-projection). -->
   <arg name="local_camera" default="false" />
   <!-- Reset the USB device before streaming (~3 s). Clears the RealSense
        "stream start failure" that follows an unclean shutdown; same choice

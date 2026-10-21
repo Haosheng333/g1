@@ -30,7 +30,7 @@ from perception.overlay import draw_detections, side_by_side
 from perception.ros_image import image_to_array
 from perception.ros_setup import load_extrinsics, load_model
 
-SYNC_SLOP_S = 0.05
+SYNC_SLOP_S = 0.10  # see perception_node.py
 #: Displayed xyz is the median of the last N frames of the same object (a box
 #: of the same label within TRACK_RADIUS_PX of the previous one), like the
 #: service's multi-frame median; raw per-frame values flicker by ~1 cm on a

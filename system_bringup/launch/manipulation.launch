@@ -33,7 +33,7 @@
   <include file="$(find arm_planning)/launch/arm_planning.launch" if="$(arg arm_planning)"/>
 
   <!-- Module 1. The D435i driver runs on PC2 (g1_intellect:
-       `rosrun g1_perception start_remote_camera.sh`) unless
+       `rosrun perception start_remote_camera.sh`) unless
        perception_local_camera:=true starts it on this host. -->
   <include file="$(find perception)/launch/perception.launch" if="$(arg perception)">
     <arg name="local_camera" value="$(arg perception_local_camera)"/>
