@@ -1,0 +1,13 @@
+# FALLBACK torso_link -> camera_link mount, used by perception_node only when
+# the launch is given use_calibration_file:=false. The default is the D455 ChArUco
+# calibration d455_extrinsics_20261017T074044_928552Z.yaml in this directory
+# (torso_link -> camera_color_optical_frame, used directly).
+#
+# Origin of these numbers: g1_intellect g1_camera/config/params.yaml,
+# calibrated on this robot with the OLD D435i (there the same physical frame is
+# labelled base_link). They differ from the D455 calibration by 18 deg of pitch
+# and 5 cm (~30 cm at 1 m), so do not use them with the D455. The module
+# defaults in m1_perception.py mirror them; arm_grasp's TF stub mirrors the
+# D455 file.
+camera_translation: [0.0576235, 0.02753, 0.44487]   # m
+camera_rotation_ypr: [0.0, 0.8307767239493009, 0.0]  # yaw, pitch, roll (rad)

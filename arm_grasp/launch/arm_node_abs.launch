@@ -7,6 +7,19 @@ Launch arm_grasp/scripts/arm_node_abs.py (node name: g1_arm_simple)
   <arg name="simulation_mode" default="false" />
   <arg name="motion_mode" default="true" />
   <arg name="debug" default="false" />
+  <!-- DIP runs the bottle grasp only: no berry MLPs, no pick_berry /
+       press_elevator_button services, no elevator_button weights required.
+       bottle_only:=false restores the full g1_arm_abs surface (needs
+       models/grasp_berry and models/elevator_button). -->
+  <arg name="bottle_only" default="true" />
+  <!-- After a successful grasp: lift (~lift_dz), retract along the grasp yaw
+       until x = retract_x_target, then the home joint config. Control stays
+       with the node; grasp_point.py home / ~release_arm_control hands it back. -->
+  <!-- Arm used by the all-in-one ~grasp_bottle service (point from
+       perception). DIP default: left (the right Revo2 is not always up). -->
+  <arg name="grasp_bottle_arm" default="left" />
+  <arg name="post_grasp_home" default="true" />
+  <arg name="retract_x_target" default="0.15" />
   <!-- SDK takeover / hand-back: the arms stay under the robot's own
        controller (arm swing) until a motion service takes them over; the
        orchestrator hands them back via ~release_arm_control when the task
@@ -37,10 +50,14 @@ Launch arm_grasp/scripts/arm_node_abs.py (node name: g1_arm_simple)
   <arg name="voxel_min_depth"                 default="0.15" />
   <arg name="voxel_max_depth"                 default="2.5" />
   <arg name="voxel_subsample_stride"          default="4" />
-  <!-- Camera extrinsic defaults mirror g1_camera/config/params.yaml
-       (base_link -> camera_link). Keeping them aligned means A* obstacles
-       land where object_detector_node places the detected object. -->
-  <arg name="voxel_camera_translation"        default="[0.0576235, 0.01753, 0.42987]" />
+  <!-- Camera extrinsics for the obstacle map. Default: the SAME calibration
+       file DIP perception uses (torso_link -> camera_color_optical_frame),
+       so A* obstacles land where perception places the detected object.
+       voxel_use_calibration_file:=false falls back to the camera_link ypr
+       mount below (g1_camera/config/params.yaml, the old D435i). -->
+  <arg name="voxel_use_calibration_file"      default="true" />
+  <arg name="voxel_calibration_file"          default="$(find perception)/config/d455_extrinsics_20261017_fitted_20261021.yaml" />
+  <arg name="voxel_camera_translation"        default="[0.0576235, 0.02753, 0.44487]" />
   <arg name="voxel_camera_rotation_ypr"       default="[0.0, 0.8307767239493009, 0.0]" />
   <!-- obstacle_frame_offset is the extra translation from the adapter's
        "root" frame (where camera_translation is measured) to the planner's
@@ -99,14 +116,15 @@ Launch arm_grasp/scripts/arm_node_abs.py (node name: g1_arm_simple)
   <arg name="publish_tf_stubs"                default="true" />
   <arg name="tf_root_frame"                   default="base_link" />
   <arg name="tf_camera_frame"                 default="camera_link" />
-  <!-- Values mirror g1_camera/config/params.yaml so TF matches the
-       extrinsics the perception stack already assumes. -->
-  <arg name="tf_camera_translation_x"         default="0.0576235" />
-  <arg name="tf_camera_translation_y"         default="0.01753" />
-  <arg name="tf_camera_translation_z"         default="0.42987" />
-  <arg name="tf_camera_yaw"                   default="0.0" />
-  <arg name="tf_camera_pitch"                 default="0.8307767239493009" />
-  <arg name="tf_camera_roll"                  default="0.0" />
+  <!-- Values mirror the parent_to_camera_link block of DIP perception's
+       default D455 calibration (perception/config/d455_extrinsics_20261017_fitted_20261021.yaml)
+       so TF matches the extrinsics perception uses. Update together. -->
+  <arg name="tf_camera_translation_x"         default="0.11805749196958046" />
+  <arg name="tf_camera_translation_y"         default="0.044449725809650356" />
+  <arg name="tf_camera_translation_z"         default="0.4058109409218396" />
+  <arg name="tf_camera_yaw"                   default="0.012757363749201653" />
+  <arg name="tf_camera_pitch"                 default="1.1818472783816647" />
+  <arg name="tf_camera_roll"                  default="0.010909863411045165" />
 
   <node pkg="arm_grasp"
         type="arm_node_abs.py"
@@ -116,6 +134,10 @@ Launch arm_grasp/scripts/arm_node_abs.py (node name: g1_arm_simple)
     <param name="simulation_mode" value="$(arg simulation_mode)" />
     <param name="motion_mode" value="$(arg motion_mode)" />
     <param name="debug" value="$(arg debug)" />
+    <param name="bottle_only" value="$(arg bottle_only)" />
+    <param name="post_grasp_home" value="$(arg post_grasp_home)" />
+    <param name="grasp_bottle_arm" value="$(arg grasp_bottle_arm)" />
+    <param name="retract_x_target" value="$(arg retract_x_target)" />
     <param name="control_switch_delay" value="$(arg control_switch_delay)" />
     <param name="control_switch_settle" value="$(arg control_switch_settle)" />
     <param name="release_arm_control_after_init_home" value="$(arg release_arm_control_after_init_home)" />
@@ -131,6 +153,7 @@ Launch arm_grasp/scripts/arm_node_abs.py (node name: g1_arm_simple)
     <param name="voxel_subsample_stride"       value="$(arg voxel_subsample_stride)" />
     <rosparam param="voxel_camera_translation"     subst_value="true">$(arg voxel_camera_translation)</rosparam>
     <rosparam param="voxel_camera_rotation_ypr"    subst_value="true">$(arg voxel_camera_rotation_ypr)</rosparam>
+    <param name="voxel_calibration_file"       value="$(arg voxel_calibration_file)" if="$(arg voxel_use_calibration_file)" />
     <rosparam param="voxel_obstacle_frame_offset"  subst_value="true">$(arg voxel_obstacle_frame_offset)</rosparam>
     <param name="voxel_defer_joint"            value="$(arg voxel_defer_joint)" />
     <param name="voxel_defer_cost_mult"        value="$(arg voxel_defer_cost_mult)" />

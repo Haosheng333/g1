@@ -1,11 +1,49 @@
 <launch>
-  <!-- The D435i is wired to G1 PC2, so on the robot its driver is started
-       there (g1_intellect: `rosrun g1_perception start_remote_camera.sh`) and
-       publishes the same topics. local_camera:=true starts it on this host
-       instead (aligned depth is required for the back-projection). -->
+  <!-- The RealSense (D455; earlier docs said D435i) is wired to G1 PC2, so
+       on the robot its driver is started there with
+       `rosrun perception start_remote_camera.sh` (same stream settings as
+       below) and publishes the same topics. local_camera:=true starts it on
+       this host instead (aligned depth is required for the back-projection). -->
   <arg name="local_camera" default="false" />
+  <!-- Reset the USB device before streaming (~3 s). Clears the RealSense
+       "stream start failure" that follows an unclean shutdown; same choice
+       as g1_intellect's start_remote_camera.sh. -->
+  <arg name="initial_reset" default="true" />
+  <!-- Extrinsics. Default: the D455 ChArUco calibration of 2026-10-17 with
+       pitch +1.9 deg and a 1 cm translation fitted on 2026-10-21 to a level
+       desk at -0.05 m and a tape-measured can at x = 0.39 m
+       (config/d455_extrinsics_20261017_fitted_20261021.yaml; the raw ChArUco file is next to it).
+       use_calibration_file:=false falls back to the older D435i torso_link ->
+       camera_link mount in config/camera_mount.yaml (an empty
+       calibration_file:= on the command line is ignored by roslaunch, hence
+       the boolean). Neither has been checked against a tape-measured object
+       from this node yet. -->
+  <arg name="use_calibration_file" default="true" />
+  <arg name="mount_file" default="$(find perception)/config/camera_mount.yaml" />
+  <arg name="calibration_file" default="$(find perception)/config/d455_extrinsics_20261017_fitted_20261021.yaml" />
+  <!-- Detector weights; empty = models/bottle_finetuned.pt (class "bottle" only). -->
+  <arg name="model" default="" />
+  <!-- Frames per service call (per-axis median of the successful ones). -->
+  <arg name="frames" default="3" />
+  <!-- Constant correction (m, torso_link), defined as the measured error
+       reported - real; the service and the viewer SUBTRACT it:
+       real = reported - offset. Values set by the operator on 2026-10-21
+       from the grasp tests with the fitted calibration. -->
+  <arg name="x_offset" default="-0.005" />
+  <arg name="y_offset" default="0.005" />
+  <arg name="z_offset" default="-0.035" />
+  <!-- Live view of what the camera sees with detections drawn on it
+       (/perception/annotated_image). viewer_window opens it in an image_view
+       window on this host (needs X11, which g1.sh start allows). -->
+  <arg name="viewer" default="true" />
+  <arg name="viewer_window" default="true" />
+  <arg name="viewer_rate" default="5" />
+  <arg name="viewer_target_label" default="bottle" />
+  <arg name="viewer_show_depth" default="true" />
+
   <include if="$(arg local_camera)" file="$(find realsense2_camera)/launch/rs_camera.launch">
     <arg name="align_depth" value="true" />
+    <arg name="initial_reset" value="$(arg initial_reset)" />
     <arg name="color_width" value="1280" />
     <arg name="color_height" value="720" />
     <arg name="depth_width" value="848" />
@@ -13,10 +51,27 @@
     <arg name="color_fps" value="15" />
     <arg name="depth_fps" value="15" />
   </include>
-  <!-- torso_link -> camera_link mount; defaults are the on-robot calibration
-       (same keys as g1_camera/config/params.yaml). -->
+
   <node name="perception_node" pkg="perception" type="perception_node.py" output="screen">
-    <rosparam param="camera_translation">[0.0576235, 0.02753, 0.44487]</rosparam>
-    <rosparam param="camera_rotation_ypr">[0.0, 0.8307767239493009, 0.0]</rosparam>
+    <rosparam command="load" file="$(arg mount_file)" />
+    <param name="calibration_file" value="$(arg calibration_file)" if="$(arg use_calibration_file)" />
+    <param name="model" value="$(arg model)" />
+    <param name="frames" value="$(arg frames)" />
+    <rosparam param="offset_xyz" subst_value="true">[$(arg x_offset), $(arg y_offset), $(arg z_offset)]</rosparam>
+  </node>
+
+  <node name="perception_viewer" pkg="perception" type="perception_viewer.py" output="screen" if="$(arg viewer)">
+    <rosparam command="load" file="$(arg mount_file)" />
+    <param name="calibration_file" value="$(arg calibration_file)" if="$(arg use_calibration_file)" />
+    <param name="model" value="$(arg model)" />
+    <param name="rate" value="$(arg viewer_rate)" />
+    <param name="target_label" value="$(arg viewer_target_label)" />
+    <param name="show_depth" value="$(arg viewer_show_depth)" />
+    <rosparam param="offset_xyz" subst_value="true">[$(arg x_offset), $(arg y_offset), $(arg z_offset)]</rosparam>
+  </node>
+  <node name="perception_view_window" pkg="image_view" type="image_view" if="$(eval arg('viewer') and arg('viewer_window'))">
+    <remap from="image" to="/perception/annotated_image" />
+    <param name="autosize" value="true" />
+    <param name="window_name" value="perception: what the robot sees" />
   </node>
 </launch>

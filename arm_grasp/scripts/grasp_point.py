@@ -19,7 +19,7 @@ import argparse
 import sys
 
 import rospy
-from std_srvs.srv import Trigger
+from std_srvs.srv import Trigger, TriggerRequest
 
 from arm_grasp.srv import (
     ExecuteGraspFromPoint,
@@ -36,10 +36,28 @@ def _call(name, srv_type, req, wait=10.0):
     return rospy.ServiceProxy(name, srv_type)(req)
 
 
+DEFAULT_ARM = "left"
+
+
 def _pick_arm(arm, y):
-    if arm:
-        return arm
-    return "left" if y > 0.0 else "right"
+    return arm or DEFAULT_ARM
+
+
+def _point_from_perception(label, index, wait=10.0):
+    """Ask /perception/get_object_position for the object; returns (x, y, z) or None."""
+    from perception.srv import GetObjectPosition, GetObjectPositionRequest  # DIP perception overlay
+
+    name = "/perception/get_object_position"
+    try:
+        resp = _call(name, GetObjectPosition, GetObjectPositionRequest(label=label, index=index), wait)
+    except rospy.ROSException as e:
+        print("perception: service %s not available (%s); is perception.launch running?" % (name, e))
+        return None
+    if not resp.success:
+        print("perception: no %r at index %d: %s" % (label, index, resp.message))
+        return None
+    print("perception: %s at (%.3f, %.3f, %.3f) %s  [%s]" % (label, resp.x, resp.y, resp.z, resp.frame_id, resp.message))
+    return resp.x, resp.y, resp.z
 
 
 def _fmt(values):
@@ -80,7 +98,7 @@ def _grasp(arm, x, y, z, timeout, assume_yes):
 
 
 def _trigger(name):
-    resp = _call(name, Trigger, None)
+    resp = _call(name, Trigger, TriggerRequest())
     print("%s: %s - %s" % (name, "OK" if resp.success else "FAILED", resp.message))
     return resp.success
 
@@ -91,9 +109,12 @@ def main(argv):
     sub = ap.add_subparsers(dest="cmd", required=True)
     for cmd in ("plan", "grasp"):
         p = sub.add_parser(cmd)
-        p.add_argument("x", type=float)
-        p.add_argument("y", type=float)
-        p.add_argument("z", type=float)
+        p.add_argument("x", type=float, nargs="?", default=None,
+                       help="torso_link metres; omit x y z to use the perception service")
+        p.add_argument("y", type=float, nargs="?", default=None)
+        p.add_argument("z", type=float, nargs="?", default=None)
+        p.add_argument("--label", default="bottle", help="perception label when no point is given")
+        p.add_argument("--index", type=int, default=0, help="perception match index when no point is given")
         p.add_argument("--arm", choices=("left", "right"),
                        help="default: left if y > 0, else right")
         if cmd == "grasp":
@@ -107,6 +128,15 @@ def main(argv):
     args = ap.parse_args(rospy.myargv(argv)[1:])
 
     rospy.init_node("grasp_point", anonymous=True)
+    if args.cmd in ("plan", "grasp"):
+        given = [v for v in (args.x, args.y, args.z) if v is not None]
+        if len(given) not in (0, 3):
+            ap.error("give all three of x y z, or none to use perception")
+        if not given:
+            point = _point_from_perception(args.label, args.index)
+            if point is None:
+                return 1
+            args.x, args.y, args.z = point
     if args.cmd == "plan":
         ok = _plan(_pick_arm(args.arm, args.y), args.x, args.y, args.z)
     elif args.cmd == "grasp":

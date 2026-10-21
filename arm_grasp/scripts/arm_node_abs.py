@@ -257,16 +257,22 @@ class ArmNodeAbs:
         # abort startup for the bottle-grasp / elevator-press paths; the berry
         # IK call raises a clear error at pick time if the model is absent.
         # -------------------------------------------------
-        self._logger.info(f"left berry model path:  {self._left_berry_model_path}")
-        self._logger.info(f"right berry model path: {self._right_berry_model_path}")
-        self._left_berry_model,  self._left_berry_scaler  = self._load_berry_ai_tools(
-            self._left_berry_model_path,  self._left_berry_scaler_path,
-            self._left_hidden_dims,  self._left_dropout,
-        )
-        self._right_berry_model, self._right_berry_scaler = self._load_berry_ai_tools(
-            self._right_berry_model_path, self._right_berry_scaler_path,
-            self._right_hidden_dims, self._right_dropout,
-        )
+        if self._bottle_only:
+            self._logger.info("bottle_only: berry models not loaded; pick_berry and "
+                              "press_elevator_button are not advertised")
+            self._left_berry_model = self._left_berry_scaler = None
+            self._right_berry_model = self._right_berry_scaler = None
+        else:
+            self._logger.info(f"left berry model path:  {self._left_berry_model_path}")
+            self._logger.info(f"right berry model path: {self._right_berry_model_path}")
+            self._left_berry_model,  self._left_berry_scaler  = self._load_berry_ai_tools(
+                self._left_berry_model_path,  self._left_berry_scaler_path,
+                self._left_hidden_dims,  self._left_dropout,
+            )
+            self._right_berry_model, self._right_berry_scaler = self._load_berry_ai_tools(
+                self._right_berry_model_path, self._right_berry_scaler_path,
+                self._right_hidden_dims, self._right_dropout,
+            )
 
         # -------------------------------------------------
         # Hand services
@@ -366,16 +372,18 @@ class ArmNodeAbs:
             Trigger,
             self._handle_grasp_bottle,
         )
-        self._pick_berry_srv = rospy.Service(
-            "~pick_berry",
-            Trigger,
-            self._handle_pick_berry,
-        )
-        self._press_elevator_button_srv = rospy.Service(
-            "~press_elevator_button",
-            PressElevatorButton,
-            self._handle_press_elevator_button,
-        )
+        self._pick_berry_srv = self._press_elevator_button_srv = None
+        if not self._bottle_only:
+            self._pick_berry_srv = rospy.Service(
+                "~pick_berry",
+                Trigger,
+                self._handle_pick_berry,
+            )
+            self._press_elevator_button_srv = rospy.Service(
+                "~press_elevator_button",
+                PressElevatorButton,
+                self._handle_press_elevator_button,
+            )
         self._acquire_arm_control_srv = rospy.Service(
             "~acquire_arm_control",
             Trigger,
@@ -416,6 +424,7 @@ class ArmNodeAbs:
             subsample_stride=self._voxel_subsample_stride,
             camera_translation=self._voxel_camera_translation,
             camera_rotation_ypr=self._voxel_camera_rotation_ypr,
+            calibration_file=self._voxel_calibration_file,
             obstacle_frame_offset=self._voxel_obstacle_frame_offset,
             defer_joint=self._voxel_defer_joint,
             defer_cost_mult=self._voxel_defer_cost_mult,
@@ -1235,6 +1244,7 @@ class ArmNodeAbs:
             lift_dz=self._lift_dz,
             retract_after_grasp=self._retract_after_grasp,
             retract_x_target=self._retract_x_target,
+            post_grasp_home=self._post_grasp_home,
             post_grasp_home_roll_offset_deg=self._post_grasp_home_roll_offset_deg,
             hand_service_timeout=self._hand_service_timeout,
             move_arm_service_name=self._move_arm_service_name,

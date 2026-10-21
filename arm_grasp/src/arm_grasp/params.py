@@ -129,6 +129,11 @@ def load_params(pkg_root: str) -> SimpleNamespace:
     # keep their own models untouched. Same MLPRegressor 5->5 architecture as
     # grasp_bottle, so it reuses the same hidden-dim / dropout params.
     # ---------------------------------------------------------------------
+    # DIP runs the bottle-grasp demo only: with ~bottle_only (default true)
+    # the berry MLPs are not loaded and ~pick_berry / ~press_elevator_button
+    # are not advertised, so models/grasp_berry and models/elevator_button
+    # need not exist. Set bottle_only:=false to restore g1_arm_abs behaviour.
+    p._bottle_only = _to_bool(rospy.get_param("~bottle_only", True))
     grasp_berry_dir = os.path.join(pkg_root, "models", "grasp_berry")
     p._left_berry_model_path = rospy.get_param(
         "~left_berry_model_path",
@@ -174,6 +179,11 @@ def load_params(pkg_root: str) -> SimpleNamespace:
 
     p._retract_after_grasp = _to_bool(rospy.get_param("~retract_after_grasp", True))
     p._retract_x_target = float(rospy.get_param("~retract_x_target", 0.15))
+    # DIP: execute_grasp_from_point / grasp_bottle finish with the planned
+    # retract and home-joint moves themselves (g1_intellect leaves that to
+    # main_process). Arm control is NOT released afterwards; call
+    # ~release_arm_control (grasp_point.py home does) when both arms are home.
+    p._post_grasp_home = _to_bool(rospy.get_param("~post_grasp_home", True))
 
     p._post_grasp_home_roll_offset_deg = {
         "left":  float(rospy.get_param("~post_grasp_home_left_roll_offset_deg",   7.0)),
@@ -226,6 +236,9 @@ def load_params(pkg_root: str) -> SimpleNamespace:
     p._voxel_camera_rotation_ypr = list(rospy.get_param(
         "~voxel_camera_rotation_ypr", [0.0, 0.8307767239493009, 0.0]
     ))
+    # perception's calibration file (torso_link -> camera_color_optical_frame);
+    # when set it replaces camera_translation / camera_rotation_ypr above.
+    p._voxel_calibration_file = str(rospy.get_param("~voxel_calibration_file", "") or "")
     p._voxel_obstacle_frame_offset = list(rospy.get_param(
         "~voxel_obstacle_frame_offset", [0.0, 0.0, 0.0]
     ))

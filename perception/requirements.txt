@@ -1,6 +1,6 @@
 ultralytics>=8.4
 opencv-python-headless>=4.8
-numpy>=1.24
+numpy>=1.24  # the ROS node decodes images with numpy itself, so numpy 2 is fine there; pin <2 only if you also want cv_bridge
 
 # only needed for test/mujoco_validation.py (ground-truth simulation check)
 mujoco>=3.0

@@ -1,0 +1,142 @@
+whatschema_version: 1
+status: CANDIDATE_REQUIRES_INDEPENDENT_VALIDATION
+saved_utc: '2026-10-17T07:40:44.928123+00:00'
+opencv_version: 4.2.0
+camera_serial_user_supplied: ''
+board:
+  dictionary: DICT_4X4_50
+  legacy_pattern: true
+  squares_x: 5
+  squares_y: 7
+  square_size_m: 0.036
+  marker_size_m: 0.027
+  origin: full chessboard top-left outer corner, excluding white margin
+  axes: X right, Y down, Z into board in canonical printed orientation
+measured_board_reference:
+  measured: true
+  parent_frame: torso_link
+  torso_convention: SLAM mode-10 torso_link, <URDF variant>
+  measurement_notes: <reference point, method, date, waist pose>
+  xyz_m:
+  - 0.3975
+  - 0.092
+  - 0.007
+  quaternion_xyzw:
+  - 0.70710678
+  - -0.70710678
+  - 0.0
+  - 0.0
+  board_frame: top-left OUTER corner of chessboard area, X right, Y down, Z into board
+    (canonical print orientation)
+  square_size_m: 0.036
+  corner_measurements_m:
+    top_left:
+    - 0.397
+    - 0.092
+    - 0.007
+    top_right:
+    - 0.397
+    - -0.088
+    - 0.007
+    bottom_left:
+    - 0.146
+    - 0.092
+    - 0.007
+    bottom_right:
+    - 0.146
+    - -0.088
+    - 0.007
+  corner_fit_residuals_m:
+    top_left: 0.0005
+    top_right: 0.0005
+    bottom_left: 0.0005
+    bottom_right: 0.0005
+colour_camera:
+  frame: camera_color_optical_frame
+  K:
+  - - 646.1146240234375
+    - 0.0
+    - 641.1279907226562
+  - - 0.0
+    - 644.8626098632812
+    - 359.85101318359375
+  - - 0.0
+    - 0.0
+    - 1.0
+  D:
+  - -0.055044032633304596
+  - 0.06075863912701607
+  - -0.0009460102301090956
+  - 0.00046222275705076754
+  - -0.019649766385555267
+  model: plumb_bob
+  width: 1280
+  height: 720
+observation:
+  frames: 30
+  first_stamp_s: 1792222842.8961127
+  last_stamp_s: 1792222844.830948
+  max_rms_px: 0.1790627146289559
+  translation_spread_m: 0.0001879115494430377
+  rotation_spread_deg: 0.09359883611330186
+  note: Repeatability and reprojection error are NOT physical calibration accuracy.
+parent_to_color_optical:
+  parent_frame: torso_link
+  child_frame: camera_color_optical_frame
+  direction: p_parent = R_parent_child @ p_child + t_parent_child
+  xyz_m:
+  - 0.10834305444463166
+  - -0.014890408571041638
+  - 0.41238065001638335
+  quaternion_xyzw:
+  - -0.6922529817200231
+  - 0.6905315144401506
+  - -0.14648330640799354
+  - 0.14998225831247883
+  matrix_4x4:
+  - - 0.0034177370175477936
+    - -0.912105205485376
+    - 0.4099419632096231
+    - 0.10834305444463166
+  - - -0.9999847938859747
+    - -0.001343099512961786
+    - 0.005348652215608174
+    - -0.014890408571041638
+  - - -0.004327940677057803
+    - -0.40995400987205804
+    - -0.9120959262705419
+    - 0.41238065001638335
+  - - 0.0
+    - 0.0
+    - 0.0
+    - 1.0
+parent_to_camera_link:
+  parent_frame: torso_link
+  child_frame: camera_link
+  direction: p_parent = R_parent_child @ p_child + t_parent_child
+  xyz_m:
+  - 0.10827170827051683
+  - 0.044449736887473314
+  - 0.4123791080680212
+  quaternion_xyzw:
+  - 0.0010248036524566932
+  - 0.5435183697899878
+  - 0.0022459496007662086
+  - 0.8393936425710519
+  matrix_4x4:
+  - - 0.40916547482244997
+    - -0.002656472411760048
+    - 0.9124563317593043
+    - 0.10827170827051683
+  - - 0.004884470853912547
+    - 0.9999878109757296
+    - 0.000721002389766492
+    - 0.044449736887473314
+  - - -0.912447125129888
+    - 0.004161857072789461
+    - 0.4091734629566162
+    - 0.4123791080680212
+  - - 0.0
+    - 0.0
+    - 0.0
+    - 1.0

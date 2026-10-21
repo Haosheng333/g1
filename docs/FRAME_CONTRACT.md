@@ -13,9 +13,14 @@ Pinned by `navigation/test/test_frame_contract.py`.
 | `base_link` | `system_bringup` static transform, `with_base_link` (**on by default**) | identical to `pelvis` |
 | `torso_link` and the rest of the URDF | `robot_state_publisher` | `pelvis -> torso_link` through the revolute `waist_yaw_joint` |
 
-Why identity is exact: `perception/` reports object positions in `base_link`, "the pelvis at zero waist yaw". The pelvis
-does not rotate with the waist (the waist is its child), so that frame is `pelvis` itself, for every waist angle.
-g1_slam never publishes `base_link` (`base_link_alias` must stay empty), so the frame has exactly one publisher.
+Why identity is exact: the pelvis does not rotate with the waist (the waist is its child), so "the pelvis at zero
+waist yaw" is `pelvis` itself, for every waist angle. g1_slam never publishes `base_link` (`base_link_alias` must stay
+empty), so the frame has exactly one publisher.
+
+**Update (2026-10):** `perception/` no longer reports in `base_link`. It reports in `torso_link`, the frame the camera is
+rigidly mounted on, so its points hold at every waist angle and the `torso_link <- base_link` lookup below is not needed
+for perception output (it is still the right conversion for a point stored in the map). What remains open for
+perception is the extrinsics value itself, see `perception/README.md` "Camera extrinsics".
 
 ## What the grasp side does with it
 

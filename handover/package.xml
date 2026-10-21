@@ -28,6 +28,9 @@
   <!-- orchestrator/RunRoute is imported lazily at trigger time only, so the
        node still starts when the orchestrator package is not built. -->
   <exec_depend>orchestrator</exec_depend>
+  <!-- handover_node.py: arm services, Revo2 tactile monitor and hand release -->
+  <exec_depend>arm_grasp</exec_depend>
+  <exec_depend>g1_hands</exec_depend>
 
   <export>
     <catkin_python_setup />

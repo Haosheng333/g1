@@ -27,11 +27,21 @@ __all__ = [
     "ObjectPositionResult",
     "backproject_pixel",
     "bbox_center",
+    "cylinder_sample_pixel",
+    "draw_detections",
+    "extrinsics_from_calibration_yaml",
+    "extrinsics_from_mount",
     "handle_get_object_position",
+    "median_depth_in_box",
     "median_nonzero_depth",
     "optical_to_base",
+    "project_rows",
     "push_along_ray",
+    "radius_from_silhouette",
     "run_detection_pipeline",
+    "table_height_below_box",
+    "top_height_in_box",
+    "upright_cylinder_center",
 ]
 
 
@@ -40,7 +50,8 @@ def __getattr__(name):
     if name in __all__:
         from importlib import import_module
 
-        value = getattr(import_module(_LAZY_MODULE), name)
+        module = "perception.overlay" if name == "draw_detections" else _LAZY_MODULE
+        value = getattr(import_module(module), name)
         globals()[name] = value          # cache: later accesses skip importlib
         return value
     raise AttributeError("module %r has no attribute %r" % (__name__, name))

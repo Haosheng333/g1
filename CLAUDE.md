@@ -92,7 +92,7 @@ ported into DIP, node `g1_arm_simple`) is built the same way through
 symlink into `../../g1_intellect/g1_arm_abs/models` (weights + 28 GB voxel
 bitmaps, shared, never copied). Grasp a typed `torso_link` point with
 `rosrun arm_grasp grasp_point.py plan|grasp X Y Z`; hands come from
-g1_intellect on PC2 (`rosrun g1_hands start_remote_hands.sh`). See
+g1_intellect on PC2 (`rosrun hand_control start_remote_hands.sh`). See
 `arm_grasp/README.md`.
 
 `voice_control/` (package `g1_voice_control`) is built through the tracked
@@ -103,8 +103,12 @@ and are downloaded explicitly; never add model weights to Git. Install its
 Python/audio dependencies only inside the designated ROS Noetic container, not
 into the host Python or another ROS environment. See `voice_control/README.md`.
 
-`perception/` is still not part of `g1_ws` and is not referenced by any launch
-file. Leave it unbuilt unless asked.
+`perception/` (package `perception`, node `perception_node.py`, service
+`/perception/get_object_position` in `torso_link`) is built in `g1_ws` through
+`g1_ws/src/perception -> ../../perception` and started by
+`system_bringup/launch/manipulation.launch perception:=true`. Its default
+extrinsics are the D455 ChArUco calibration in `perception/config/`, still to
+be confirmed with a tape measure (see `perception/README.md`).
 
 ## Run (navigation)
 

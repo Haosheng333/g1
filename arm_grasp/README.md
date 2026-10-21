@@ -9,6 +9,18 @@ Higher-level orchestrators (e.g. `main_process`) sit on top of this node
 and drive composite behaviours via the services below. `arm_grasp` never
 talks to voice or perception topics directly.
 
+## DIP scope: the bottle grasp only
+
+DIP uses this node for the grasp-and-deliver demo, so by default
+(`bottle_only:=true`) it loads only the bottle-grasp MLPs and the voxel A*
+map, and does not advertise `pick_berry` or `press_elevator_button`.
+`config/model_weights.yaml` lists only those weights, so a standalone
+`models/` needs just `abstraction_map/` (28 GB voxel bitmaps) and
+`grasp_bottle/`; `models/grasp_berry/` and `models/elevator_button/` are
+not needed. (Here `models/` is still a symlink into g1_intellect, which has
+all of them.) `bottle_only:=false` restores the full g1_arm_abs surface
+described below.
+
 ## Node
 
 - Script: `scripts/arm_node_abs.py`
@@ -69,20 +81,31 @@ export G1_NETWORK_INTERFACE=eno1
 ## Grasp a typed point (no camera)
 
 Coordinates are `torso_link`: x forward, y left, z up (m). The grasp gate is
-`x <= 0.39`, `z >= -0.02`. Hands come from g1_intellect on PC2
-(`rosrun g1_hands start_remote_hands.sh`).
+`x <= 0.39`, `z >= -0.02`. The hands are g1_intellect's `g1_hands` nodes on
+PC2; start them from here with `rosrun hand_control start_remote_hands.sh`
+(a DIP copy of g1_intellect's script, in `hand_control/scripts/`), then
+check `rosservice list | grep g1_hand_` shows BOTH sides.
 
 ```bash
 roslaunch arm_grasp arm_node_abs.launch network_interface:=enp196s0
-rosrun arm_grasp grasp_point.py plan  0.33 -0.08 0.05   # plan only, never moves
-rosrun arm_grasp grasp_point.py grasp 0.33 -0.08 0.05   # plan, confirm y/N, execute
-rosrun arm_grasp grasp_point.py release --arm right     # open the hand
+rosrun arm_grasp grasp_point.py plan                    # the can perception sees; plan only, never moves
+rosrun arm_grasp grasp_point.py grasp                   # plan, confirm y/N, execute
+rosrun arm_grasp grasp_point.py grasp 0.33 -0.08 0.05   # same with a typed torso_link point
+rosrun arm_grasp grasp_point.py release --arm left      # open the hand
 rosrun arm_grasp grasp_point.py home                    # open both hands, arms home,
                                                         # hand arms back to the robot
 ```
 
-`--arm` defaults to `left` when `y > 0`, else `right`. `grasp` runs pregrasp
--> `pre_grasp` hand -> grasp -> `grasp_5f` hand -> lift `~lift_dz`. Without
+Without coordinates the point comes from `/perception/get_object_position`
+(`--label bottle --index 0`), so `perception.launch` must be running. The arm
+defaults to `left` (`--arm right` for the other); the `~grasp_bottle` service
+uses `~grasp_bottle_arm`, also `left` by default in DIP. `grasp` runs pregrasp
+-> `pre_grasp` hand -> grasp -> `grasp_5f` hand -> lift `~lift_dz` -> retract
+along the grasp yaw until x = `~retract_x_target` (0.15 m) -> home joint
+config (`~post_grasp_home`, default true; the planner's own keyframes, the
+same leg g1_intellect's main_process drives). The hand stays closed and the
+node keeps arm control; `grasp_point.py home` or `~release_arm_control`
+hands the arms back. Without
 the depth stream the voxel A* plans WITHOUT obstacles: the table is invisible
 to it, so keep the swept space clear.
 
@@ -486,6 +509,16 @@ What each failure mode looks like:
 - **Boxes land on the floor but you want the floor ignored** → narrow `~voxel_max_depth` or raise the obstacle frame with `~voxel_obstacle_frame_offset`.
 - **No cloud in RViz but log says `voxels=0`** → cloud was fully clipped out of the planner's workspace box; it's a frame-offset problem, not a depth problem.
 - **Cloud fires only on grasp calls, not continuously** → by design. Each `latest_voxel_obstacles()` publish is triggered by a plan request.
+
+### Camera extrinsics for the obstacle map
+
+The depth stream is placed in `torso_link` with the SAME calibration file
+DIP perception uses, `perception/config/d455_extrinsics_20261017_fitted_20261021.yaml`
+(`~voxel_calibration_file`, launch arg `voxel_calibration_file`,
+`voxel_use_calibration_file:=false` falls back to the old
+`voxel_camera_translation` / `voxel_camera_rotation_ypr` D435i mount). Change
+the file in both launches together; see `perception/README.md`
+"Camera extrinsics" for how it was fitted.
 
 ### Calibrating the obstacle frame
 

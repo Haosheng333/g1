@@ -15,3 +15,6 @@ log/
 .idea/
 *.swp
 .DS_Store
+
+# ultralytics downloads stock weights into the cwd when the perception tests/demo run
+/perception/*.pt

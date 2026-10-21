@@ -849,6 +849,8 @@ dependency).
 
 ### 12.5 One defect recorded, deliberately not fixed
 
+*Resolved since: `_default_R_base_opt()` is now composed from proper rotations (det = 1.0 to 1e-9).*
+
 perception's `_default_R_base_opt()` is **not orthonormal** (`det = 1.0003760`,
 `max|RᵗR − I| = 3.76e-04`), so `optical_to_base` applies ~188 µm/m of
 scale-and-shear — ~0.19 mm at 1 m, immaterial beside perception's own 1.46 cm

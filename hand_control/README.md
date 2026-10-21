@@ -19,6 +19,23 @@ All finger numbers live in `config/finger_presets.yaml`
 Check the SDK has the functions this package uses (prints [] if all present):
     python3 -c "from bc_stark_sdk import main_mod as m; print([n for n in ('auto_detect','init_from_detected','close_device_handler','HandType') if not hasattr(m,n)])"
 
+## On the G1: the hands hang off PC2
+
+On this robot both Revo2 hands are wired to PC2's USB buses, so the nodes that
+drive them are g1_intellect's `g1_hands` package running from PC2's checkout,
+not this package. Start them from the workstation with:
+
+    rosrun hand_control start_remote_hands.sh          # Ctrl+C stops them
+    rosservice list | grep g1_hand_                    # expect BOTH /g1_hand_left/* and /g1_hand_right/*
+
+(`scripts/start_remote_hands.sh`, a DIP copy of g1_intellect's script: SSHes
+to PC2, lists its serial devices, restarts `revo2_dual_hand_node.launch`
+against this workstation's master; PC2 details via `G1_PC2_IP` /
+`G1_PC2_USER` / `G1_PC2_PASS`, ports via `G1_HAND_{LEFT,RIGHT}_PORT`.)
+Those nodes expose `/g1_hand_{left,right}/{pre_grasp,grasp_5f,release,...}`,
+which is what `arm_grasp` calls. The `/hand_{left,right}/*` services below
+belong to this package's own node for a hand plugged into the workstation.
+
 ## Run
     roslaunch hand_control hand.launch side:=left                          # real hand, auto-detect port
     roslaunch hand_control hand.launch side:=left com_port:=/dev/ttyUSB0   # force a port

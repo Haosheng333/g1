@@ -1,4 +1,9 @@
 # Model weights pinned to a specific Hugging Face Hub commit.
+#
+# DIP scope: the bottle grasp only. The elevator-button and berry weights of
+# g1_intellect's g1_arm_abs are NOT listed, so fetch_weights.py does not
+# download them and the startup check does not require them; the node runs
+# with ~bottle_only:=true (pick_berry / press_elevator_button not advertised).
 # Updating a weight: push new file to HF, then bump hf_revision and sha256.
 # Downloaded by scripts/fetch_weights.py into arm_grasp/models/<filename>;
 # nested layout is preserved (not flattened) because the voxel A* backend
@@ -61,21 +66,3 @@ weights:
   grasp_bottle_right_scaler:
     filename: grasp_bottle/right/x_scaler.pkl
     sha256: 3b466885db1382123f9b1dcaaf37504e250803cf21d82bd61c39ab9ca24065ec
-  elevator_button_left_model:
-    filename: elevator_button/left/best_model.pth
-    sha256: 903aacc87071983d143b0b634fbd67645937a6e50ace2301de579d68b4995109
-  elevator_button_left_scaler:
-    filename: elevator_button/left/x_scaler.pkl
-    sha256: 6dbcab5acac076525f73966e1288ded4d5d0127c96f56c2c3f01d63742f32f28
-  elevator_button_left_config:
-    filename: elevator_button/left/config.json
-    sha256: 705c492eecab276408e08f2962214734ccb2c1c46cd4adc1457f0cd927cda444
-  elevator_button_right_model:
-    filename: elevator_button/right/best_model.pth
-    sha256: 0aa0574479e511eab37c33007e155cde01542fe0b8f570fca7f6c00b81abed8a
-  elevator_button_right_scaler:
-    filename: elevator_button/right/x_scaler.pkl
-    sha256: 499339358c7ee1d203537f965ab1befea04a6d2ed603b96aacea52213062cc7f
-  elevator_button_right_config:
-    filename: elevator_button/right/config.json
-    sha256: 9d6c63cd7f5c3579705ceb3ecb12e682fd9bf4f79ffede77c592cb62d5efa02d

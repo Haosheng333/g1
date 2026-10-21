@@ -1,0 +1,157 @@
+whatschema_version: 1
+status: FITTED_TO_TAPE_MEASURE_2026-10-21
+saved_utc: '2026-10-17T07:40:44.928123+00:00'
+opencv_version: 4.2.0
+camera_serial_user_supplied: ''
+board:
+  dictionary: DICT_4X4_50
+  legacy_pattern: true
+  squares_x: 5
+  squares_y: 7
+  square_size_m: 0.036
+  marker_size_m: 0.027
+  origin: full chessboard top-left outer corner, excluding white margin
+  axes: X right, Y down, Z into board in canonical printed orientation
+measured_board_reference:
+  measured: true
+  parent_frame: torso_link
+  torso_convention: SLAM mode-10 torso_link, <URDF variant>
+  measurement_notes: <reference point, method, date, waist pose>
+  xyz_m:
+  - 0.3975
+  - 0.092
+  - 0.007
+  quaternion_xyzw:
+  - 0.70710678
+  - -0.70710678
+  - 0.0
+  - 0.0
+  board_frame: top-left OUTER corner of chessboard area, X right, Y down, Z into board
+    (canonical print orientation)
+  square_size_m: 0.036
+  corner_measurements_m:
+    top_left:
+    - 0.397
+    - 0.092
+    - 0.007
+    top_right:
+    - 0.397
+    - -0.088
+    - 0.007
+    bottom_left:
+    - 0.146
+    - 0.092
+    - 0.007
+    bottom_right:
+    - 0.146
+    - -0.088
+    - 0.007
+  corner_fit_residuals_m:
+    top_left: 0.0005
+    top_right: 0.0005
+    bottom_left: 0.0005
+    bottom_right: 0.0005
+colour_camera:
+  frame: camera_color_optical_frame
+  K:
+  - - 646.1146240234375
+    - 0.0
+    - 641.1279907226562
+  - - 0.0
+    - 644.8626098632812
+    - 359.85101318359375
+  - - 0.0
+    - 0.0
+    - 1.0
+  D:
+  - -0.055044032633304596
+  - 0.06075863912701607
+  - -0.0009460102301090956
+  - 0.00046222275705076754
+  - -0.019649766385555267
+  model: plumb_bob
+  width: 1280
+  height: 720
+observation:
+  frames: 30
+  first_stamp_s: 1792222842.8961127
+  last_stamp_s: 1792222844.830948
+  max_rms_px: 0.1790627146289559
+  translation_spread_m: 0.0001879115494430377
+  rotation_spread_deg: 0.09359883611330186
+  note: Repeatability and reprojection error are NOT physical calibration accuracy.
+parent_to_color_optical:
+  parent_frame: torso_link
+  child_frame: camera_color_optical_frame
+  direction: p_parent = R_parent_child @ p_child + t_parent_child
+  xyz_m:
+  - 0.11813733536636295
+  - -0.014890408571041638
+  - 0.4058166334857702
+  quaternion_xyzw:
+  - -0.6946072736917573
+  - 0.6928289634192519
+  - -0.13520043986110972
+  - 0.1386708471283149
+  matrix_4x4:
+  - - 0.0034177370175477936
+    - -0.9249913557753311
+    - 0.379972776412462
+    - 0.11813733536636295
+  - - -0.9999847938859746
+    - -0.0015168472082535958
+    - 0.0053019969230528406
+    - -0.014890408571041638
+  - - -0.004327940677057803
+    - -0.3799851193342483
+    - -0.9249824744361563
+    - 0.4058166334857702
+  - - 0.0
+    - 0.0
+    - 0.0
+    - 1.0
+parent_to_camera_link:
+  parent_frame: torso_link
+  child_frame: camera_link
+  direction: p_parent = R_parent_child @ p_child + t_parent_child
+  xyz_m:
+  - 0.11805749196958046
+  - 0.044449725809650356
+  - 0.4058109409218396
+  quaternion_xyzw:
+  - 0.00097613788190338
+  - 0.5571375465321531
+  - 0.0022578916093577515
+  - 0.8304165842060534
+  matrix_4x4:
+  - - 0.37918531233922737
+    - -0.002662295146299184
+    - 0.9253169246754095
+    - 0.11805749196958046
+  - - 0.004837667404702306
+    - 0.9999878981606319
+    - 0.0008947102119376783
+    - 0.044449725809650356
+  - - -0.9253081086212772
+    - 0.004137114554355025
+    - 0.3791936027979377
+    - 0.4058109409218396
+  - - 0.0
+    - 0.0
+    - 0.0
+    - 1.0
+derived_from: config/d455_extrinsics_20261017T074044_928552Z.yaml
+correction:
+  date_utc: '2026-10-21T07:14:07.988767'
+  rotation_deg_about_camera_x_axis: -1.8692056341096759
+  translation_added_m:
+  - 0.009794280921731291
+  - 0.0
+  - -0.0065640165306131565
+  method: 'Three facts fitted on the standing robot, waist at zero: (1) the desk in
+    view must be level in torso_link -> pitch 1.87 deg about the colour camera''s
+    horizontal axis; (2) desk height under the can = -0.050 m by tape -> tz -0.0066;
+    (3) can centre x = 0.390 m by tape -> tx +0.0098. Result: desk level to 0.04 deg
+    and -0.051..-0.052 at 0.3-0.6 m, can centre (0.392, 0.028, 0.022). CAVEAT: the
+    robot''s lean relative to the desk differed by ~2 deg between sessions, so expect
+    ~1-1.5 cm variation with stance; re-run test/desk_level_check.py when in doubt.'
