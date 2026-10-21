@@ -9,6 +9,18 @@ Higher-level orchestrators (e.g. `main_process`) sit on top of this node
 and drive composite behaviours via the services below. `arm_grasp` never
 talks to voice or perception topics directly.
 
+## DIP scope: the bottle grasp only
+
+DIP uses this node for the grasp-and-deliver demo, so by default
+(`bottle_only:=true`) it loads only the bottle-grasp MLPs and the voxel A*
+map, and does not advertise `pick_berry` or `press_elevator_button`.
+`config/model_weights.yaml` lists only those weights, so a standalone
+`models/` needs just `abstraction_map/` (28 GB voxel bitmaps) and
+`grasp_bottle/`; `models/grasp_berry/` and `models/elevator_button/` are
+not needed. (Here `models/` is still a symlink into g1_intellect, which has
+all of them.) `bottle_only:=false` restores the full g1_arm_abs surface
+described below.
+
 ## Node
 
 - Script: `scripts/arm_node_abs.py`
@@ -76,15 +88,24 @@ check `rosservice list | grep g1_hand_` shows BOTH sides.
 
 ```bash
 roslaunch arm_grasp arm_node_abs.launch network_interface:=enp196s0
-rosrun arm_grasp grasp_point.py plan  0.33 -0.08 0.05   # plan only, never moves
-rosrun arm_grasp grasp_point.py grasp 0.33 -0.08 0.05   # plan, confirm y/N, execute
-rosrun arm_grasp grasp_point.py release --arm right     # open the hand
+rosrun arm_grasp grasp_point.py plan                    # the can perception sees; plan only, never moves
+rosrun arm_grasp grasp_point.py grasp                   # plan, confirm y/N, execute
+rosrun arm_grasp grasp_point.py grasp 0.33 -0.08 0.05   # same with a typed torso_link point
+rosrun arm_grasp grasp_point.py release --arm left      # open the hand
 rosrun arm_grasp grasp_point.py home                    # open both hands, arms home,
                                                         # hand arms back to the robot
 ```
 
-`--arm` defaults to `left` when `y > 0`, else `right`. `grasp` runs pregrasp
--> `pre_grasp` hand -> grasp -> `grasp_5f` hand -> lift `~lift_dz`. Without
+Without coordinates the point comes from `/perception/get_object_position`
+(`--label bottle --index 0`), so `perception.launch` must be running. The arm
+defaults to `left` (`--arm right` for the other); the `~grasp_bottle` service
+uses `~grasp_bottle_arm`, also `left` by default in DIP. `grasp` runs pregrasp
+-> `pre_grasp` hand -> grasp -> `grasp_5f` hand -> lift `~lift_dz` -> retract
+along the grasp yaw until x = `~retract_x_target` (0.15 m) -> home joint
+config (`~post_grasp_home`, default true; the planner's own keyframes, the
+same leg g1_intellect's main_process drives). The hand stays closed and the
+node keeps arm control; `grasp_point.py home` or `~release_arm_control`
+hands the arms back. Without
 the depth stream the voxel A* plans WITHOUT obstacles: the table is invisible
 to it, so keep the swept space clear.
 

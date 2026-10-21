@@ -7,6 +7,19 @@ Launch arm_grasp/scripts/arm_node_abs.py (node name: g1_arm_simple)
   <arg name="simulation_mode" default="false" />
   <arg name="motion_mode" default="true" />
   <arg name="debug" default="false" />
+  <!-- DIP runs the bottle grasp only: no berry MLPs, no pick_berry /
+       press_elevator_button services, no elevator_button weights required.
+       bottle_only:=false restores the full g1_arm_abs surface (needs
+       models/grasp_berry and models/elevator_button). -->
+  <arg name="bottle_only" default="true" />
+  <!-- After a successful grasp: lift (~lift_dz), retract along the grasp yaw
+       until x = retract_x_target, then the home joint config. Control stays
+       with the node; grasp_point.py home / ~release_arm_control hands it back. -->
+  <!-- Arm used by the all-in-one ~grasp_bottle service (point from
+       perception). DIP default: left (the right Revo2 is not always up). -->
+  <arg name="grasp_bottle_arm" default="left" />
+  <arg name="post_grasp_home" default="true" />
+  <arg name="retract_x_target" default="0.15" />
   <!-- SDK takeover / hand-back: the arms stay under the robot's own
        controller (arm swing) until a motion service takes them over; the
        orchestrator hands them back via ~release_arm_control when the task
@@ -121,6 +134,10 @@ Launch arm_grasp/scripts/arm_node_abs.py (node name: g1_arm_simple)
     <param name="simulation_mode" value="$(arg simulation_mode)" />
     <param name="motion_mode" value="$(arg motion_mode)" />
     <param name="debug" value="$(arg debug)" />
+    <param name="bottle_only" value="$(arg bottle_only)" />
+    <param name="post_grasp_home" value="$(arg post_grasp_home)" />
+    <param name="grasp_bottle_arm" value="$(arg grasp_bottle_arm)" />
+    <param name="retract_x_target" value="$(arg retract_x_target)" />
     <param name="control_switch_delay" value="$(arg control_switch_delay)" />
     <param name="control_switch_settle" value="$(arg control_switch_settle)" />
     <param name="release_arm_control_after_init_home" value="$(arg release_arm_control_after_init_home)" />

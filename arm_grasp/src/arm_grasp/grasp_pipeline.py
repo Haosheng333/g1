@@ -88,6 +88,12 @@ class GraspContext:
     # hand; abort without closing the hand if it did not. Default off so the
     # bottle path is unchanged; the berry path turns it on.
     require_grasp_reach: bool = False
+    #: Post-grasp leg executed INSIDE execute_grasp (DIP has no main_process
+    #: to chain the planner's keyframes): after the lift, drive the planned
+    #: retract joints (opposite-yaw pull-back until x = retract_x_target) and
+    #: then the planned home joints. Same keyframes g1_intellect's
+    #: main_process steps 7-9 use. Off for berry picking.
+    post_grasp_home: bool = False
     grasp_reach_tol_rad: float = 0.1
     # Settle pause (s) AFTER the arm reaches the grasp pose and BEFORE the grasp
     # hand is triggered, so the arm fully stops first. Default 0 (bottle); berry
@@ -555,6 +561,7 @@ def execute_grasp(
     if ctx.post_grasp_hold_time > 0:
         time.sleep(ctx.post_grasp_hold_time)
 
+    log_tag = f"execute_grasp[{arm}]"
     # Step 5: lift after grasp
     if not ctx.lift_after_grasp:
         q_now = ctx.get_current_arm_q(arm)
@@ -585,10 +592,52 @@ def execute_grasp(
         result["message"] = f"failed at lift motion: {lift_resp.message}"
         return result
 
+    # Step 6 (DIP): retract -> home, from the planner's keyframes.
+    ok, done = run_post_grasp_leg(ctx, arm, plan, wait, lift_timeout, result, log_tag)
+    if not ok:
+        return result
+
     result["success"] = True
     result["message"] = (
-        "execute_grasp success"
+        f"execute_grasp success ({' -> '.join(done)})"
         if not clip_messages
-        else "execute_grasp success (with joint clipping)"
+        else f"execute_grasp success ({' -> '.join(done)}, with joint clipping)"
     )
     return result
+
+
+def run_post_grasp_leg(ctx, arm, plan, wait, timeout, result, log_tag):
+    """Drive the planner's post-grasp keyframes after the lift: retract
+    (``ctx.retract_after_grasp``, ``plan["retract_joints"]``) then home
+    (``ctx.post_grasp_home``, ``plan["home_joints"]``), each through
+    ``ctx.lift_move`` (the move_arm_joints service). The object is in the
+    hand, so a failure leaves the arm where it is, writes the reason into
+    ``result["message"]`` and returns ``(False, done)``; the hand is never
+    opened here. Returns ``(True, done)`` with ``done`` the legs driven,
+    starting with "lift".
+    """
+    legs = []
+    if ctx.retract_after_grasp:
+        if plan.get("retract_joints") is not None:
+            legs.append(("retract", plan["retract_joints"]))
+        else:
+            ctx.logger.info(f"[{log_tag}] post-grasp retract skipped (not planned)")
+    if ctx.post_grasp_home and plan.get("home_joints") is not None:
+        legs.append(("home", plan["home_joints"]))
+    done = ["lift"]
+    for leg_name, joints in legs:
+        try:
+            leg_resp = ctx.lift_move(arm, np.asarray(joints, dtype=float).tolist(), wait, timeout)
+        except rospy.ROSException as e:
+            result["message"] = f"failed at {leg_name} motion: service {ctx.move_arm_service_name} not available: {e}"
+            return False, done
+        except rospy.ServiceException as e:
+            result["message"] = f"failed at {leg_name} motion: call {ctx.move_arm_service_name} failed: {e}"
+            return False, done
+        result["final_joint_angles"] = list(leg_resp.current_joint_angles)
+        if not leg_resp.success:
+            result["message"] = f"failed at {leg_name} motion: {leg_resp.message}"
+            return False, done
+        done.append(leg_name)
+        ctx.logger.info(f"[{log_tag}] post-grasp {leg_name} done")
+    return True, done

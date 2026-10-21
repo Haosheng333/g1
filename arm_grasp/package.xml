@@ -3,7 +3,7 @@
   <name>arm_grasp</name>
   <version>0.1.0</version>
   <description>
-    Absolute arm control with NN-based grasp / elevator-button inference and
+    Absolute arm control with NN-based grasp inference (DIP: bottle grasp only; berry / elevator-button paths behind ~bottle_only:=false) and
     obstacle-aware voxel A* planning for the Unitree G1 humanoid. A single
     node (g1_arm_simple) owns NN IK, voxel A* on the head-camera depth
     stream, per-arm pose compensation, dual-arm home, lift / retract, and
@@ -38,7 +38,8 @@
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>rviz</exec_depend>
-  <!-- launch default voxel_calibration_file is $(find perception)/config/... -->
+  <!-- launch default voxel_calibration_file is $(find perception)/config/...;
+       grasp_point.py imports perception.srv when no point is typed -->
   <exec_depend>perception</exec_depend>
   <exec_depend>message_runtime</exec_depend>
 
