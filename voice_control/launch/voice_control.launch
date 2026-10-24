@@ -2,7 +2,7 @@
   <!-- Standalone launch file, also included by full_system.launch only when
        voice_control:=true is passed explicitly. -->
 
-  <arg name="input_mode" default="microphone" />            <!-- "microphone" | "wav" -->
+  <arg name="input_mode" default="microphone" />            <!-- "microphone" | "wav" | "scripted" -->
   <arg name="vosk_config" default="$(find g1_voice_control)/config/vosk.yaml" />
   <arg name="vosk_model_path" default="" />                   <!-- empty = use vosk_config -->
   <arg name="sample_rate" default="" />                       <!-- empty = use vosk_config -->
@@ -12,6 +12,20 @@
   <arg name="dry_run_backend" default="true" />                <!-- true = match/confirm only, no orchestrator calls -->
   <arg name="commands_config" default="$(find g1_voice_control)/config/commands.yaml" />
   <arg name="service_wait_timeout_s" default="10.0" />
+  <!-- "" = commands.yaml's confirmation_mode; "confirm" | "cancel_window" -->
+  <arg name="confirmation_mode" default="" />
+  <!-- Vosk grammar from the lexicon vocabulary (reliable on the command set);
+       false = free dictation. -->
+  <arg name="use_grammar" default="true" />
+  <!-- Parse an utterance only once the end word ("over") is heard. -->
+  <arg name="require_end_word" default="true" />
+  <arg name="utterance_timeout_sec" default="15.0" />
+  <!-- PortAudio input buffering; "" = the adapter's 0.5 s. The default "high"
+       latency overflows on this workstation's codec with 200 ms blocks. -->
+  <arg name="stream_latency_sec" default="" />
+  <!-- input_mode:=scripted only: transcripts separated by "|", replayed with
+       no audio, e.g. "go to the desk pick up a can go to the chair and pass me over|confirm" -->
+  <arg name="scripted_transcripts" default="" />
 
   <node name="voice_control_node" pkg="g1_voice_control" type="voice_control_node.py" output="screen">
     <param name="input_mode" value="$(arg input_mode)" />
@@ -24,5 +38,11 @@
     <param name="dry_run_backend" value="$(arg dry_run_backend)" />
     <param name="commands_config" value="$(arg commands_config)" />
     <param name="service_wait_timeout_s" value="$(arg service_wait_timeout_s)" />
+    <param name="confirmation_mode" value="$(arg confirmation_mode)" />
+    <param name="use_grammar" value="$(arg use_grammar)" />
+    <param name="require_end_word" value="$(arg require_end_word)" />
+    <param name="utterance_timeout_sec" value="$(arg utterance_timeout_sec)" />
+    <param name="stream_latency_sec" value="$(arg stream_latency_sec)" />
+    <param name="scripted_transcripts" value="$(arg scripted_transcripts)" />
   </node>
 </launch>

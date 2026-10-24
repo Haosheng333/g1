@@ -1,5 +1,13 @@
 # voice_control command configuration.
 #
+# Two kinds of command are recognised:
+#   * the exact phrases under `phrases` (status / cancel / confirm and the two
+#     legacy single-route starts);
+#   * the spoken fetch-and-deliver task, parsed by the slot grammar in
+#     `lexicon` (config/lexicon.yaml): "go to the desk, pick up a can, go to
+#     the chair, and pass me, over" -> /orchestrator/run_fetch_deliver with
+#     target=table_01, destination=chair_01, label=bottle.
+#
 # grasp_target / deliver_target feed RunRoute.srv's `target` field directly:
 # The current adapter assumes `target` is used both as the navigation waypoint
 # name and (for grasp) as the perception object label. Re-check that assumption
@@ -38,8 +46,21 @@ phrases:
     - "确认执行"
     - "confirm"
 
-# Seconds a task-start command (grasp/deliver) stays pending before it
-# expires and must be re-spoken. Chosen to be long enough for a person to say
+# Slot grammar for the spoken task. Relative to this file's directory.
+lexicon: lexicon.yaml
+
+# How a pending task becomes a dispatch:
+#   confirm        the person must say "确认执行" / "confirm" within the window
+#                  (default; nothing is dispatched on silence)
+#   cancel_window  g1_intellect's task_confirm_node behaviour: the task is
+#                  dispatched when the window closes UNLESS "取消任务" / "cancel
+#                  task" was heard in it. Choose deliberately: silence then
+#                  means GO.
+confirmation_mode: confirm
+
+# Seconds a task-start command (grasp/deliver/fetch_deliver) stays pending
+# before it expires and must be re-spoken (confirm mode), or before it is
+# dispatched (cancel_window mode). Chosen to be long enough for a person to say
 # "确认执行" / "confirm" deliberately, short enough that a stale pending
 # command does not linger and get confirmed by surprise later.
 confirmation_window_sec: 8.0

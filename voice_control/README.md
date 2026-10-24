@@ -1,66 +1,80 @@
 # g1_voice_control
 
-An independent voice-control frontend to the orchestrator. It matches a
-small allowlist of spoken commands, requires a separate confirmation before
-starting a task, and calls the **same** `RunRoute` services terminal control
-already uses (`rosservice call /orchestrator/run_grasp ...`). It does not
+An independent voice-control frontend to the orchestrator. It recognises the
+spoken fetch-and-deliver task with a small slot grammar, plus a short allowlist
+of fixed phrases, requires a confirmation step before starting a task, and calls
+the **same** `RunRoute` services terminal control already uses. It does not
 replace terminal control and does not touch the robot/hand SDK. The
-`system_bringup` full-system launch exposes it only as an explicit opt-in and
-keeps it disabled by default.
+`system_bringup` launches expose it only as an explicit opt-in and keep it
+disabled by default.
 
-Built and offline-tested on a machine with **no ROS, no Vosk, no
-microphone, and no real robot**. Everything marked "untested" below needs
-verification on the actual workspace before being relied on.
+## The spoken task
+
+```
+"go to the desk, pick up a can, go to the chair, and pass me, over"
+   -> fetch_deliver  target=table_01  destination=chair_01  label=bottle
+   -> (say "confirm")  -> /orchestrator/run_fetch_deliver
+```
+
+`src/g1_voice_control/commands.py:TaskParser` is a slot grammar configured by
+`config/lexicon.yaml` (verb classes, objects -> perception label, places ->
+**standing waypoint** name, priors, wake and end words). It tokenises a final
+transcript longest-phrase-first, skips unknown words (the, a, to, please), splits
+into clauses on commas / "and" / "then" / a second verb, fills one frame per
+clause and lowers the frames to steps, filling the gaps `main_process` fills
+with the same priors (an object lives at the table; the user is at the chair).
+**Exactly one shape is dispatched** -- navigate, grasp, navigate, handover.
+Everything else is logged as *understood but unsupported*, with what was
+understood, and nothing is called:
+
+| Said | Result |
+|---|---|
+| "go to the desk, pick up a can, go to the chair, and pass me, over" | `fetch_deliver` table_01 / bottle / chair_01 |
+| "lucy, walk to the table, grab a bottle, then go to the seat and hand it to me, over" | same |
+| "bring a can to me, over" / "pick up a can and pass me, over" | same, from the priors |
+| "go to the chair, over" | unsupported (navigate only) |
+| "don't go to the desk ..." | rejected: negation |
+| "what's the weather" | no match |
+
+Places are the only point where vocabulary meets the map: `desk`/`table` ->
+`table_01`, `chair`/`seat` -> `chair_01` are records in
+`slam/maps/<map>/standing_waypoints.yaml`; the orchestrator refuses a name the
+active map does not have. Edit `lexicon.yaml` for another map.
+
+**Utterances end with "over".** Vosk emits a final result at every pause, so
+the sentence arrives in pieces; the node buffers them and parses the whole
+utterance once a result ends with an end word (`~require_end_word`, default
+true; a buffer older than `~utterance_timeout_sec` = 15 s is dropped with a
+log line). `confirm`, `cancel task` and `status` act immediately, no end word
+needed.
+
+**Confirmation.** `confirmation_mode: confirm` (default) keeps this package's
+rule: the task is pending for `confirmation_window_sec` (8 s) and dispatches
+only on "confirm" / "确认执行"; silence lets it expire.
+`confirmation_mode: cancel_window` is g1_intellect `task_confirm_node`'s rule:
+the window is a chance to say "cancel task"; when it closes the task
+**dispatches**. There is no TTS in this package, so in that mode watch the log
+(`voice_control: ... awaiting_confirmation: heard 'fetch_deliver' ...`).
+
+**Vosk grammar.** With the lexicon loaded the node hands Vosk a grammar (the
+lexicon vocabulary plus the fixed phrases, ~70 words), which makes the small
+English model dependable on this command set; `use_grammar:=false` restores
+free dictation.
 
 ## Orchestrator service mappings
 
-The mappings below were checked against the G1 repository's current
-`orchestrator/srv/RunRoute.srv` and service registration. Re-check them after
-future orchestrator interface changes before setting `dry_run_backend:=false`.
-
-| Voice command | Orchestrator service | Notes |
+| Voice command | Orchestrator service | Request |
 |---|---|---|
-| "开始抓取" / "start grasping" | `/orchestrator/run_grasp` | Currently reports the orchestrator's unresolved perception-extrinsics blocker verbatim |
-| "开始递送" / "start delivery" | `/orchestrator/run_deliver` | |
-| "查看状态" / "status" | `/orchestrator/status` (topic, latched `std_msgs/String`) | A **read**, not a service call; does not touch the confirm/dispatch state machine |
-| "取消任务" / "cancel task" | **none exists** | See "Why cancel is unavailable" below |
-| "确认执行" / "confirm" | (local only) | Confirms a pending grasp/deliver; no orchestrator call by itself |
+| the spoken task | `/orchestrator/run_fetch_deliver` | `target`=pickup standing pose, `destination`=delivery standing pose, `label`=perception class |
+| "开始抓取" / "start grasping" | `/orchestrator/run_grasp` | `target` from `commands.yaml` (NOT_READY route) |
+| "开始递送" / "start delivery" | `/orchestrator/run_deliver` | `target` from `commands.yaml` |
+| "查看状态" / "status" | `/orchestrator/status` (latched topic) | a read |
+| "取消任务" / "cancel task" | none | drops a pending, unconfirmed task; cannot stop a running route |
+| "确认执行" / "confirm" | (local) | confirms the pending task |
 
-`RunRoute.srv` request fields used by the current adapter: `route` (set to the route's own
-name as a same-name guard), `target`, `destination` (explicitly `""` because
-voice control calls the separate routes, not `deliver_task`), `start_step`
-(always `""` here -- voice control never resumes a route), `dry_run`.
-`event_token` is left `""`;
-it is for the handover monitor's own release request, which this package
-never sends (see "Release ownership" in `orchestrator/README.md` -- voice
-control starts tasks, it does not open the hand).
-
-**`target`'s real semantics** (from `orchestrator/src/orchestrator/sequencer.py`'s
-`RouteContext`/`DryRunBackend`): a single string, used as *both* the
-navigation waypoint name and the perception object label for `grasp`, and as
-the delivery waypoint name for `deliver`. That double use is the orchestrator's
-existing wiring, not a simplification made in this package. `side` (which
-hand) is **not** a request field at all -- it is server-side config
-(`orchestrator/config/orchestrator.yaml`'s `side`), so no voice command needs
-to carry it.
-
-### Why "cancel" is unavailable
-
-The orchestrator's interface table and `sequencer.Backend` expose no
-cancellation action of any kind. What this package can still do safely and
-locally: drop an **unconfirmed** pending grasp/deliver before it is ever
-sent (nothing has executed, so nothing needs undoing). It cannot stop a route
-already in flight -- `rosservice call` could not do that either today. Saying
-"取消任务" while a route is executing gets an explicit "no cancellation
-service exists" response, never a false "cancelled".
-
-### Why "开始抓取" reports NOT_READY
-
-The current orchestrator implements `/arm/convert_observation`, including its
-declared torso-frame convention offset. The remaining static blocker is the
-unverified physical camera extrinsics/datum on the deployed robot. Until that
-measurement is cleared, `run_grasp` refuses before motion. This package reports
-`result.blockers` exactly as received; it does not bypass or reinterpret them.
+`start_step` is always `""` (voice never resumes a route) and `event_token`
+is `""` (it belongs to the handover monitor's release request). `side` is not
+a request field: it is the orchestrator's own config.
 
 ## Package layout
 
@@ -69,11 +83,13 @@ voice_control/                          (catkin package: g1_voice_control)
 ├── package.xml, CMakeLists.txt, setup.py
 ├── requirements.txt                    # vosk, sounddevice, pyyaml -- imported lazily
 ├── config/
-│   ├── commands.yaml                   # phrases, validated targets, confirmation window
+│   ├── commands.yaml                   # phrases, confirmation mode/window, lexicon pointer
+│   ├── lexicon.yaml                    # the slot grammar: verbs, objects, places -> standing waypoints
 │   └── vosk.yaml                       # explicit language, model path, sample rate
 ├── launch/voice_control.launch         # standalone or optional system_bringup include
 ├── src/g1_voice_control/
-│   ├── commands.py                     # phrase normalisation + matching + negation -- no ROS/Vosk
+│   ├── commands.py                     # exact phrases + TaskParser slot grammar -- no ROS/Vosk
+│   ├── utterance.py                    # joins final results until the end word -- no ROS
 │   ├── configuration.py                # validated YAML command/target loading -- no ROS/Vosk
 │   ├── dispatch.py                     # confirm/expire/busy/cancel state machine -- no ROS/Vosk
 │   ├── asr_adapter.py                  # Vosk mic/WAV adapters -- lazy imports
@@ -87,6 +103,7 @@ voice_control/                          (catkin package: g1_voice_control)
 │   ├── test_commands.py                # offline
 │   ├── test_dispatch.py                # offline
 │   ├── test_orchestrator_client.py     # offline (rospy/orchestrator.srv faked in sys.modules)
+│   ├── test_task_parser.py             # offline: the spoken task, refusals, the utterance buffer
 │   └── test_ros_transport.py (+ .test) # REAL ROS master needed; see below
 └── models/                             # gitignored; populated by download_model.sh
 ```
@@ -99,7 +116,7 @@ Python environment is already selected by `docker/g1.sh enter`:
 ```bash
 cd ~/Workspace/g1_intellect
 docker/g1.sh enter 'cd ~/Workspace/DIP && python3 -m pip install -r voice_control/requirements.txt'
-docker/g1.sh enter 'cd ~/Workspace/DIP && voice_control/scripts/download_model.sh cn'  # or: en
+docker/g1.sh enter 'cd ~/Workspace/DIP && voice_control/scripts/download_model.sh en'  # or: cn
 docker/g1.sh enter 'cd ~/Workspace/DIP/g1_ws && PATH="$CONDA_PREFIX/bin:$PATH" catkin_make -j8 -DROS_EDITION=ROS1 -DCMAKE_BUILD_TYPE=Release'
 ```
 
@@ -119,22 +136,41 @@ Do not upgrade the ROS system Python to satisfy a wheel.
 # enumerate input devices
 rosrun g1_voice_control list_microphones.py
 
-# WAV-file recognition, no ROS, no live mic
-rosrun g1_voice_control recognize_wav.py --model "$(rospack find g1_voice_control)/models/vosk-model-small-cn-0.22" --wav sample.wav
+# WAV-file recognition, no ROS, no live mic (16 kHz, 16-bit mono PCM)
+rosrun g1_voice_control recognize_wav.py --model "$(rospack find g1_voice_control)/models/vosk-model-small-en-us-0.15" --wav sample.wav
+
+# no audio at all: replay transcripts through match -> confirm -> dispatch
+roslaunch g1_voice_control voice_control.launch input_mode:=scripted \
+    scripted_transcripts:="go to the desk pick up a can go to the chair and pass me over|confirm"
 
 # live microphone, matched/confirmed but NO orchestrator calls (default)
-roslaunch g1_voice_control voice_control.launch input_device:=2
+roslaunch g1_voice_control voice_control.launch input_device:=4
 
-# live microphone, real dispatch enabled
-roslaunch g1_voice_control voice_control.launch input_device:=2 dry_run_backend:=false
+# live microphone, real dispatch enabled (the orchestrator still dry-runs unless ITS enable_motion is true)
+roslaunch g1_voice_control voice_control.launch input_device:=4 dry_run_backend:=false
 
-# optional full-system integration: still dry-run, and disabled unless requested
-roslaunch system_bringup full_system.launch voice_control:=true voice_input_device:=2
+# the whole spoken-task stack, voice on
+roslaunch system_bringup fetch_deliver.launch map_name:=lab_map_DIP voice_control:=true voice_dry_run_backend:=false
 ```
 
 Diagnostics: `rostopic echo /rosout` while the node runs shows every heard
 transcript, match/no-match reason, and dispatch event
 (`voice_control: heard ... -> matched/rejected/awaiting_confirmation/dispatched/...`).
+
+### Microphone sample rate
+
+The workstation's ALC245 codec only runs at 44.1 kHz and above through ALSA,
+and the container has no PulseAudio to resample for it, so a 16 kHz stream
+cannot be opened on it. `VoskMicrophoneAdapter` therefore asks the device for
+16 kHz, and if that is refused opens it at its own default rate (48 kHz here)
+and downsamples to the model rate in pure python
+(`asr_adapter.Resampler`: a 3:1 box average for 48 k -> 16 k, linear
+interpolation otherwise). The startup log line
+`microphone device 4 opened at 48000 Hz -> 16000 Hz for the model, latency 0.50s`
+shows which path is in use. The stream is opened with an explicit 0.5 s
+PortAudio latency (`stream_latency_sec`): with the library default this codec
+overflows on 200 ms blocks even with an empty callback, and every overflow is
+a fault that clears a pending confirmation.
 
 ### Ubuntu VM/container microphone routing
 
@@ -177,8 +213,9 @@ navigation configuration in `valid_grasp_targets` or
 `confirmation_window_sec` defaults to 8 seconds and must be positive.
 
 `config/vosk.yaml` explicitly selects `language`, `model_path`, and
-`sample_rate`. Pick **one** language's model (`vosk-model-small-cn-0.22` default, or
-`vosk-model-small-en-us-0.15`); a single Vosk model is never bilingual. The
+`sample_rate`. Pick **one** language's model (`vosk-model-small-en-us-0.15`
+default, because the spoken task is English; or `vosk-model-small-cn-0.22`);
+a single Vosk model is never bilingual. The
 phrase table above already covers both languages for the matcher itself --
 only the ASR model needs picking per deployment. Launch arguments
 `language`, `vosk_model_path`, and `sample_rate` override the YAML only when
@@ -220,7 +257,7 @@ is never retried automatically, and status/cancel commands remain responsive.
 ## Tests
 
 ```bash
-# offline -- no ROS master, run directly or via catkin:
+# offline -- no ROS master, run directly or via catkin (83 tests):
 cd voice_control && PYTHONPATH=src python3 -m unittest discover -s test -v
 # or: catkin run_tests g1_voice_control
 
@@ -228,7 +265,7 @@ cd voice_control && PYTHONPATH=src python3 -m unittest discover -s test -v
 rostest g1_voice_control test_ros_transport.test
 ```
 
-**Current local result: 50 passing and one ROS-only test skipped:**
+**Current local result: 83 passing and one ROS-only test skipped:**
 - `test_commands.py`: every supported phrase in both languages, including
   Vosk-style spaces between Chinese words, case/whitespace/full-width
   normalisation, negation rejection, substring

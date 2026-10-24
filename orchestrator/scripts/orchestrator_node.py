@@ -4,6 +4,8 @@
     /orchestrator/run_navigate_report  orchestrator/RunRoute
     /orchestrator/run_grasp            orchestrator/RunRoute
     /orchestrator/run_deliver          orchestrator/RunRoute
+    /orchestrator/run_deliver_task     orchestrator/RunRoute
+    /orchestrator/run_fetch_deliver    orchestrator/RunRoute   <- the spoken task
     /orchestrator/run_auto_release     orchestrator/RunRoute
 
 This package contains no robotics of its own. No IK, no TF maths, no path
@@ -25,6 +27,19 @@ SAFETY MODEL
     on every exit path.
   * The full grasp route stays NOT_READY: it requires the unresolved
     perception -> arm_planning frame contract (see capabilities.FRAME_CONTRACT).
+
+TWO REAL BACKENDS, ONE PER STACK
+
+  * RosBackend      arm_planning / arm_control / hand_control / the DIP tactile
+                    monitor: the grasp, deliver and deliver_task routes.
+  * ArmGraspBackend arm_grasp (g1_arm_simple) / g1_hands on PC2 / handover_node
+                    / STANDING waypoints: the fetch_deliver route, i.e. the
+                    modules that have actually run on this robot.
+
+  Both share RosCommon (localization, motion gate, navigation status,
+  perception). The node picks the backend from the route, and a backend is
+  constructed only for a real run whose preflight passed, so a dry run still
+  builds no robot client of any kind.
 """
 from __future__ import annotations
 
@@ -42,6 +57,7 @@ from orchestrator import nav_guard as ng
 from orchestrator import preflight as pf
 from orchestrator import routes as routes_mod
 from orchestrator import sequencer as seq
+from orchestrator import standing_waypoints as sw
 from orchestrator.execution_lock import Busy, ExecutionLock
 from orchestrator.srv import RunRoute, RunRouteResponse
 
@@ -123,11 +139,11 @@ class RosProbe(pf.Probe):
         return ""
 
 
-class RosBackend(seq.Backend):
-    """Real actions. Built ONLY for a motion run whose preflight passed.
+class RosCommon(seq.Backend):
+    """Adapters every real route needs: localization, gate, navigation, perception.
 
-    Every proxy is created in __init__, so the mere existence of this object
-    means the run is a real one. A dry run never constructs it.
+    Constructed ONLY for a motion run whose preflight passed; a dry run never
+    builds one. Subclasses add one manipulation stack each.
     """
 
     def __init__(self, side: str, timeouts: dict):
@@ -138,6 +154,150 @@ class RosBackend(seq.Backend):
 
         rospy.Subscriber("/navigation/status", String, self._on_nav_status, queue_size=10)
         self._nav_cancel_pub = rospy.Publisher("/navigation/cancel", Empty, queue_size=1)
+
+        from g1_navigation.srv import NavigateToObject
+        from perception.srv import GetObjectPosition
+
+        self._navigate = rospy.ServiceProxy("/navigation/navigate", NavigateToObject)
+        self._enable_motion = rospy.ServiceProxy("/navigation/enable_motion", SetBool)
+        self._detect = rospy.ServiceProxy("/perception/get_object_position", GetObjectPosition)
+
+    def _on_nav_status(self, msg):
+        with self._nav_status_lock:
+            self._nav_status = msg.data
+
+    # --- injected clock (the shared await_pull loop uses these) -----------------
+    def now(self):
+        return rospy.Time.now().to_sec()
+
+    def sleep(self, seconds):
+        rospy.sleep(float(seconds))
+
+    def aborted(self):
+        return rospy.is_shutdown()
+
+    # --- shared actions ------------------------------------------------------------
+    def await_localization(self, ctx):
+        # Preflight already confirmed /slam/manager/state is True; this step
+        # exists so a resume starting here still re-checks it.
+        timeout = self.timeouts.get("localization", 30.0)
+        deadline = rospy.Time.now() + rospy.Duration(timeout)
+        while rospy.Time.now() < deadline and not rospy.is_shutdown():
+            try:
+                msg = rospy.wait_for_message("/slam/manager/state", Bool, timeout=1.0)
+            except rospy.ROSException:
+                continue
+            if msg.data:
+                return seq.StepResult(True, "localized")
+        return seq.StepResult(False, "WAIT: not localized within %.0fs" % timeout)
+
+    def enable_motion(self, ctx):
+        response = self._enable_motion(True)
+        return seq.StepResult(
+            bool(response.success),
+            "motion gate: %s" % response.message,
+            motion_issued=bool(response.success),
+        )
+
+    def navigate(self, ctx):
+        """Drive to the PICKUP waypoint (ctx.target)."""
+        return self._drive_to(ctx.target, "pickup")
+
+    def navigate_to_destination(self, ctx):
+        """Drive to the DELIVERY waypoint (ctx.destination).
+
+        A separate action so the delivery leg cannot silently reuse the pickup
+        waypoint, which is what happened while RunRoute carried only `target`.
+        """
+        if not ctx.destination:
+            return seq.StepResult(
+                False,
+                "no delivery destination: RunRoute.destination is empty. The full task "
+                "navigates twice and this leg has no waypoint; refusing rather than "
+                "re-driving to the pickup waypoint %r." % (ctx.target,))
+        return self._drive_to(ctx.destination, "delivery")
+
+    def _drive_to(self, waypoint, leg):
+        """Call /navigation/navigate, then apply navigation's saw_active guard."""
+        guard = ng.NavGuard(self.timeouts.get("navigate", 1800.0))
+        guard.start(rospy.Time.now().to_sec())
+        response = self._navigate(class_name=waypoint, approach_distance=0.0)
+        if not response.success:
+            return seq.StepResult(False, "navigate(%s=%r) rejected: %s"
+                                  % (leg, waypoint, response.message))
+        return self._await_nav_terminal(
+            guard, "navigation to the %s waypoint %r" % (leg, waypoint))
+
+    def _await_nav_terminal(self, guard, what):
+        """Poll /navigation/status through the saw_active guard to a verdict."""
+        rate = rospy.Rate(10)
+        while not rospy.is_shutdown():
+            with self._nav_status_lock:
+                status = self._nav_status
+            verdict = guard.update(rospy.Time.now().to_sec(), status)
+            if verdict != ng.PENDING:
+                break
+            rate.sleep()
+        return seq.StepResult(
+            verdict == ng.SUCCESS,
+            "%s %s: %s" % (what, verdict, guard.reason),
+            motion_issued=True)
+
+    def detect_object(self, ctx):
+        # `label` is set by routes whose `target` is a waypoint name; the older
+        # routes use `target` as the label as well.
+        label = ctx.label or ctx.target
+        response = self._detect(label=label, index=0)
+        if not response.success:
+            return seq.StepResult(False, "perception: %s" % response.message)
+        # Stored verbatim. No frame conversion happens here or anywhere in this
+        # package; frame_id is reported exactly as perception sent it.
+        ctx.detection = {
+            "x": response.x, "y": response.y, "z": response.z,
+            "frame_id": response.frame_id, "label": label,
+            # RECEIPT time, not observation time: GetObjectPosition.srv carries
+            # no stamp. Recorded so to_planner_frame can pass an honest upper
+            # bound and let arm_planning apply its waist-motion guard.
+            "received_at": rospy.Time.now(),
+        }
+        return seq.StepResult(True, "detected %s at (%.3f, %.3f, %.3f) in %s" % (
+            label, response.x, response.y, response.z, response.frame_id))
+
+    def report(self, ctx):
+        rospy.loginfo("[orchestrator] detection: %s", ctx.detection)
+        return seq.StepResult(True, "reported: %s" % (ctx.detection,))
+
+    def record_held_object(self, ctx):
+        """The ONLY writer of held-object state."""
+        label = ctx.label or ctx.target or "object"
+        ctx.handover.begin(ctx.side, label, release_authorized=True)
+        ctx.held_label = label
+        return seq.StepResult(
+            True, "recorded %r held in the %s hand" % (ctx.held_label, ctx.side))
+
+    # --- cleanup -----------------------------------------------------------------
+    def cancel_navigation(self):
+        try:
+            self._nav_cancel_pub.publish(Empty())
+        except Exception as exc:  # noqa: BLE001 - cleanup must never raise
+            rospy.logerr("[orchestrator] cancel_navigation failed: %s", exc)
+
+    def disable_motion(self):
+        try:
+            self._enable_motion(False)
+        except Exception as exc:  # noqa: BLE001 - cleanup must never raise
+            rospy.logerr("[orchestrator] disable_motion failed: %s", exc)
+
+
+class RosBackend(RosCommon):
+    """arm_planning / arm_control / hand_control / DIP tactile monitor.
+
+    Every proxy is created in __init__, so the mere existence of this object
+    means the run is a real one. A dry run never constructs it.
+    """
+
+    def __init__(self, side: str, timeouts: dict):
+        super(RosBackend, self).__init__(side, timeouts)
 
         # Measured arm joints, needed as `current_joints` by both planner
         # services. Captured here rather than in RosProbe, which only tracks
@@ -151,13 +311,8 @@ class RosBackend(seq.Backend):
 
         from arm_control.srv import MoveArmJoints
         from arm_planning.srv import ConvertObservation, PlanGraspFromPoint, PlanToPose
-        from g1_navigation.srv import NavigateToObject
         from handover.srv import ArmMonitor
-        from perception.srv import GetObjectPosition
 
-        self._navigate = rospy.ServiceProxy("/navigation/navigate", NavigateToObject)
-        self._enable_motion = rospy.ServiceProxy("/navigation/enable_motion", SetBool)
-        self._detect = rospy.ServiceProxy("/perception/get_object_position", GetObjectPosition)
         self._hand = {
             name: rospy.ServiceProxy("/hand_%s/%s" % (side, name), Trigger)
             for name in ("pre_grasp", "grasp", "release")
@@ -230,32 +385,11 @@ class RosBackend(seq.Backend):
             return None, "~poses/%s contains a non-finite value: %r" % (name, pose)
         return pose, ""
 
-    def _on_nav_status(self, msg):
-        with self._nav_status_lock:
-            self._nav_status = msg.data
-
-    # --- injected clock (the shared await_pull loop uses these) -----------------
-    def now(self):
-        return rospy.Time.now().to_sec()
-
-    def sleep(self, seconds):
-        rospy.sleep(float(seconds))
-
-    def aborted(self):
-        return rospy.is_shutdown()
-
     # --- task-state steps ------------------------------------------------------
     def require_held_object(self, ctx):
         """Never invents a held object; a delivery cannot start without a grasp."""
         validation = ctx.handover.require_held_object(ctx.side)
         return seq.StepResult(validation.ok, validation.reason)
-
-    def record_held_object(self, ctx):
-        """The ONLY writer of held-object state."""
-        ctx.handover.begin(ctx.side, ctx.target or "object", release_authorized=True)
-        ctx.held_label = ctx.target or "object"
-        return seq.StepResult(
-            True, "recorded %r held in the %s hand" % (ctx.held_label, ctx.side))
 
     def settle_handover(self, ctx):
         delay = float(self.timeouts.get("handover_settle_sec", 1.0))
@@ -386,90 +520,6 @@ class RosBackend(seq.Backend):
             self._disarm_monitor()
         except Exception as exc:  # noqa: BLE001 - cleanup must never raise
             rospy.logerr("[orchestrator] disarm_monitor_cleanup failed: %s", exc)
-
-    # --- actions -----------------------------------------------------------------
-    def await_localization(self, ctx):
-        # Preflight already confirmed /slam/manager/state is True; this step
-        # exists so a resume starting here still re-checks it.
-        timeout = self.timeouts.get("localization", 30.0)
-        deadline = rospy.Time.now() + rospy.Duration(timeout)
-        while rospy.Time.now() < deadline and not rospy.is_shutdown():
-            try:
-                msg = rospy.wait_for_message("/slam/manager/state", Bool, timeout=1.0)
-            except rospy.ROSException:
-                continue
-            if msg.data:
-                return seq.StepResult(True, "localized")
-        return seq.StepResult(False, "WAIT: not localized within %.0fs" % timeout)
-
-    def enable_motion(self, ctx):
-        response = self._enable_motion(True)
-        return seq.StepResult(
-            bool(response.success),
-            "motion gate: %s" % response.message,
-            motion_issued=bool(response.success),
-        )
-
-    def navigate(self, ctx):
-        """Drive to the PICKUP waypoint (ctx.target)."""
-        return self._drive_to(ctx.target, "pickup")
-
-    def navigate_to_destination(self, ctx):
-        """Drive to the DELIVERY waypoint (ctx.destination).
-
-        A separate action so the delivery leg cannot silently reuse the pickup
-        waypoint, which is what happened while RunRoute carried only `target`.
-        """
-        if not ctx.destination:
-            return seq.StepResult(
-                False,
-                "no delivery destination: RunRoute.destination is empty. The full task "
-                "navigates twice and this leg has no waypoint; refusing rather than "
-                "re-driving to the pickup waypoint %r." % (ctx.target,))
-        return self._drive_to(ctx.destination, "delivery")
-
-    def _drive_to(self, waypoint, leg):
-        """Call /navigation/navigate, then apply navigation's saw_active guard."""
-        guard = ng.NavGuard(self.timeouts.get("navigate", 1800.0))
-        guard.start(rospy.Time.now().to_sec())
-        response = self._navigate(class_name=waypoint, approach_distance=0.0)
-        if not response.success:
-            return seq.StepResult(False, "navigate(%s=%r) rejected: %s"
-                                  % (leg, waypoint, response.message))
-
-        rate = rospy.Rate(10)
-        while not rospy.is_shutdown():
-            with self._nav_status_lock:
-                status = self._nav_status
-            verdict = guard.update(rospy.Time.now().to_sec(), status)
-            if verdict != ng.PENDING:
-                break
-            rate.sleep()
-        return seq.StepResult(
-            verdict == ng.SUCCESS,
-            "navigation to the %s waypoint %r %s: %s" % (leg, waypoint, verdict, guard.reason),
-            motion_issued=True)
-
-    def detect_object(self, ctx):
-        response = self._detect(label=ctx.target, index=0)
-        if not response.success:
-            return seq.StepResult(False, "perception: %s" % response.message)
-        # Stored verbatim. No frame conversion happens here or anywhere in this
-        # package; frame_id is reported exactly as perception sent it.
-        ctx.detection = {
-            "x": response.x, "y": response.y, "z": response.z,
-            "frame_id": response.frame_id, "label": ctx.target,
-            # RECEIPT time, not observation time: GetObjectPosition.srv carries
-            # no stamp. Recorded so to_planner_frame can pass an honest upper
-            # bound and let arm_planning apply its waist-motion guard.
-            "received_at": rospy.Time.now(),
-        }
-        return seq.StepResult(True, "detected %s at (%.3f, %.3f, %.3f) in %s" % (
-            ctx.target, response.x, response.y, response.z, response.frame_id))
-
-    def report(self, ctx):
-        rospy.loginfo("[orchestrator] detection: %s", ctx.detection)
-        return seq.StepResult(True, "reported: %s" % (ctx.detection,))
 
     def to_planner_frame(self, ctx):
         """Hand the observation to arm_planning's /arm/convert_observation.
@@ -724,18 +774,253 @@ class RosBackend(seq.Backend):
             motion_issued=True,
         )
 
-    # --- cleanup -----------------------------------------------------------------
-    def cancel_navigation(self):
-        try:
-            self._nav_cancel_pub.publish(Empty())
-        except Exception as exc:  # noqa: BLE001 - cleanup must never raise
-            rospy.logerr("[orchestrator] cancel_navigation failed: %s", exc)
+class ArmGraspBackend(RosCommon):
+    """arm_grasp (g1_arm_simple) + g1_hands on PC2 + handover_node + standing poses.
 
-    def disable_motion(self):
+    The fetch_deliver route. Every action is one service call or one topic wait
+    against a node that has already been exercised on this robot; nothing is
+    planned, interpolated or converted here. Built only for a real run whose
+    preflight passed.
+    """
+
+    ARM_NODE = "/g1_arm_simple"
+    HANDOVER_DONE = "done"
+    HANDOVER_ERROR_PREFIX = "error:"
+
+    def __init__(self, side: str, timeouts: dict):
+        super(ArmGraspBackend, self).__init__(side, timeouts)
+
+        from arm_grasp.srv import ExecuteGraspFromPoint, PlanGraspFromPoint
+        from geometry_msgs.msg import PoseStamped
+        from g1_slam import standing_goal
+
+        self._standing_goal = standing_goal
+        # Navigation's EXACT-pose interface. The publisher exists from the start
+        # of the run so the connection is up long before the first drive.
+        self._goal_pub = rospy.Publisher(standing_goal.GOAL_TOPIC, PoseStamped, queue_size=1)
+        # Delegated to arm_grasp: planning (no motion) and the whole grasp pipeline.
+        self._plan_grasp_from_point_arm_grasp = rospy.ServiceProxy(
+            "/g1_arm_simple/plan_grasp_from_point", PlanGraspFromPoint)
+        self._execute_grasp = rospy.ServiceProxy(
+            "/g1_arm_simple/execute_grasp_from_point", ExecuteGraspFromPoint)
+        self._release_arm_control = rospy.ServiceProxy(
+            "/g1_arm_simple/release_arm_control", Trigger)
+        # handover_node: start (blocks until armed) and abort (disarm, arm stays).
+        self._handover_start = rospy.ServiceProxy("/handover/start", Trigger)
+        self._handover_abort = rospy.ServiceProxy("/handover/abort", Trigger)
+        self._handover_state = None
+        self._handover_state_lock = threading.Lock()
+        rospy.Subscriber("/handover/state", String, self._on_handover_state, queue_size=5)
+        #: True from a successful /handover/start until /handover/state settles,
+        #: so cleanup knows whether a monitor may still be armed.
+        self._handover_open = False
+
+    def _on_handover_state(self, msg):
+        with self._handover_state_lock:
+            self._handover_state = msg.data
+
+    def _current_handover_state(self):
+        with self._handover_state_lock:
+            return self._handover_state
+
+    # --- standing-pose navigation --------------------------------------------------
+    def navigate_standing(self, ctx):
+        return self._drive_to_standing(ctx, "pickup", ctx.target)
+
+    def navigate_standing_destination(self, ctx):
+        if not ctx.destination:
+            return seq.StepResult(
+                False, "no delivery destination: RunRoute.destination is empty; refusing "
+                       "rather than re-driving to the pickup pose %r" % (ctx.target,))
+        return self._drive_to_standing(ctx, "delivery", ctx.destination)
+
+    def _drive_to_standing(self, ctx, leg, name):
+        """Publish the resolved standing pose as an exact goal; guard the status."""
+        resolved = ctx.standing.get(leg)
+        if not resolved:
+            return seq.StepResult(
+                False, "the %s standing waypoint %r was not resolved before the route "
+                       "started; refusing to guess a pose" % (leg, name))
+        key, record, frame = resolved
+        goal = self._standing_goal.build_goal(record, frame, rospy.Time.now())
+        guard = ng.NavGuard(self.timeouts.get("navigate", 1800.0))
+        # Give a freshly started navigation_node a moment to subscribe; the
+        # publisher itself was created when this backend was built.
+        deadline = rospy.Time.now() + rospy.Duration(2.0)
+        while (self._goal_pub.get_num_connections() == 0 and rospy.Time.now() < deadline
+               and not rospy.is_shutdown()):
+            rospy.sleep(0.05)
+        if self._goal_pub.get_num_connections() == 0:
+            return seq.StepResult(
+                False, "nothing subscribes to %s; is navigation_node running?"
+                % self._standing_goal.GOAL_TOPIC)
+        guard.start(rospy.Time.now().to_sec())
+        self._goal_pub.publish(goal)
+        rospy.loginfo("[orchestrator] standing pose %s -> x=%.3f y=%.3f yaw=%.3f in %s "
+                      "(exact goal, no approach offset)", key, record["x"], record["y"],
+                      record["yaw"], frame)
+        return self._await_nav_terminal(
+            guard, "drive to the %s standing pose %r" % (leg, key))
+
+    def settle_chassis(self, ctx):
+        delay = float(self.timeouts.get("nav_settle_sec", 1.5))
+        self.sleep(delay)
+        return seq.StepResult(True, "chassis settled %.2fs after the drive" % delay)
+
+    # --- arm_grasp -----------------------------------------------------------------
+    def _target_xyz(self, ctx):
+        point = [ctx.detection.get(k) for k in ("x", "y", "z")]
+        if not ctx.detection or not all(
+                isinstance(v, (int, float)) and math.isfinite(v) for v in point):
+            return None, ("no usable detection: detect_object did not run or returned a "
+                          "non-finite point %s" % (point,))
+        return point, ""
+
+    def plan_grasp_point(self, ctx):
+        """Plan the whole grasp in arm_grasp, moving nothing. Its reason, verbatim."""
+        point, reason = self._target_xyz(ctx)
+        if point is None:
+            return seq.StepResult(False, reason)
         try:
-            self._enable_motion(False)
+            # Positional (arm, x, y, z, waypoint-count override, planner
+            # override): both overrides at 0 = that node's own defaults.
+            response = self._plan_grasp_from_point_arm_grasp(
+                ctx.side, point[0], point[1], point[2], 0, 0)
+        except Exception as exc:  # noqa: BLE001
+            return seq.StepResult(False, "arm_grasp planning raised %s: %s"
+                                  % (type(exc).__name__, exc))
+        if not response.success:
+            return seq.StepResult(False, "arm_grasp plan: %s" % response.message)
+        ctx.plan["arm_grasp"] = {
+            "pre_waypoints": int(response.pre_waypoint_count),
+            "target_waypoints": int(response.target_waypoint_count),
+            "lift": bool(list(response.lift_joint_angles)),
+            "retract": bool(list(response.retract_joint_angles)),
+            "home": bool(list(response.home_joint_angles)),
+        }
+        summary = ctx.plan["arm_grasp"]
+        return seq.StepResult(
+            True, "arm_grasp planned the %s arm to (%.3f, %.3f, %.3f): %d pre + %d target "
+                  "waypoints, lift=%s retract=%s home=%s | %s"
+            % (ctx.side, point[0], point[1], point[2], summary["pre_waypoints"],
+               summary["target_waypoints"], summary["lift"], summary["retract"],
+               summary["home"], response.message))
+
+    def execute_grasp_point(self, ctx):
+        """The whole grasp pipeline inside arm_grasp, as grasp_point.py drives it."""
+        if "arm_grasp" not in ctx.plan:
+            return seq.StepResult(
+                False, "refusing to execute a grasp that was not planned in this run")
+        point, reason = self._target_xyz(ctx)
+        if point is None:
+            return seq.StepResult(False, reason)
+        try:
+            response = self._execute_grasp(
+                arm=ctx.side, x=point[0], y=point[1], z=point[2], wait=True,
+                timeout=float(self.timeouts.get("grasp_move_sec", 6.0)))
+        except Exception as exc:  # noqa: BLE001 - the command left this process
+            return seq.StepResult(
+                False, "arm_grasp execute raised %s: %s; the arm's state is unknown and "
+                       "it keeps SDK control" % (type(exc).__name__, exc),
+                motion_issued=True)
+        if not response.success:
+            return seq.StepResult(
+                False, "arm_grasp grasp FAILED: %s. The arm may be extended and keeps SDK "
+                       "control; `rosrun arm_grasp grasp_point.py home` parks it"
+                % response.message, motion_issued=True)
+        return seq.StepResult(
+            True, "grasped with the %s arm; arm_grasp ran pregrasp, pre_grasp, approach, "
+                  "grasp_5f, lift, retract, home: %s" % (ctx.side, response.message),
+            motion_issued=True)
+
+    def release_arm_control(self, ctx):
+        """Hand the arms back to the robot's own controller, as main_process does.
+
+        Best effort, never fatal: arm_grasp refuses unless both arms are at home,
+        and main_process then simply walks with the SDK holding the arm. The
+        outcome is reported either way.
+        """
+        try:
+            response = self._release_arm_control()
+        except Exception as exc:  # noqa: BLE001
+            return seq.StepResult(
+                True, "arm hand-back skipped (%s: %s); the arm node keeps control"
+                % (type(exc).__name__, exc))
+        if not response.success:
+            return seq.StepResult(
+                True, "arm hand-back refused by arm_grasp, SDK keeps the arms: %s"
+                % response.message)
+        return seq.StepResult(True, "arms handed back to the robot's controller: %s"
+                              % response.message, motion_issued=True)
+
+    # --- handover_node -------------------------------------------------------------
+    def handover_start(self, ctx):
+        validation = ctx.handover.require_held_object(ctx.side)
+        if not validation.ok:
+            return seq.StepResult(False, validation.reason)
+        try:
+            response = self._handover_start()
+        except Exception as exc:  # noqa: BLE001
+            return seq.StepResult(False, "/handover/start raised %s: %s; the arm's state is "
+                                         "unknown" % (type(exc).__name__, exc),
+                                  motion_issued=True)
+        if not response.success:
+            return seq.StepResult(False, "handover_node: %s" % response.message,
+                                  motion_issued=True)
+        self._handover_open = True
+        return seq.StepResult(True, "handover_node: %s" % response.message, motion_issued=True)
+
+    def await_handover(self, ctx):
+        """Wait for handover_node to report `done`: pull detected, hand open, arm home.
+
+        The monitor is g1_hands' tactile auto_release_monitor, and the release
+        itself runs inside handover_node (/handover/run_auto_release). This step
+        only observes. A timeout aborts the handover (monitor disarmed, hand
+        still closed, arm left at the pose) and FAILS; nothing is released.
+        """
+        timeout = float(self.timeouts.get("handover_sec", 120.0))
+        started = self.now()
+        deadline = started + timeout
+        while not self.aborted():
+            state = self._current_handover_state() or ""
+            if state == self.HANDOVER_DONE:
+                self._handover_open = False
+                # handover_node's release is a hand-open command acknowledged by
+                # the hand service, then GoHomeArm. That is a COMMANDED release;
+                # object transfer stays unverifiable, exactly as for `deliver`.
+                ctx.handover.mark_release_commanded()
+                ctx.handover.mark_done()
+                return seq.StepResult(
+                    True, "handover done after %.1fs: pull detected, hand released, %s arm "
+                          "homed by handover_node" % (self.now() - started, ctx.side))
+            if state.startswith(self.HANDOVER_ERROR_PREFIX):
+                self._handover_open = False
+                ctx.handover.mark_release_uncertain(state)
+                return seq.StepResult(
+                    False, "handover_node reported %r; the object may still be in the hand "
+                           "or falling, a human must inspect" % state)
+            if self.now() >= deadline:
+                self._abort_handover("timeout")
+                ctx.handover.abandon("handover timeout")
+                return seq.StepResult(
+                    False, "TIMEOUT: nobody pulled the object within %.0fs; monitor disarmed, "
+                           "hand still closed, arm left at the handover pose. Release by hand "
+                           "with `rosrun handover handover_cli.py release`" % timeout)
+            self.sleep(0.1)
+        return seq.StepResult(False, "CANCELLED while awaiting the handover; nothing released")
+
+    def _abort_handover(self, why):
+        try:
+            response = self._handover_abort()
+            rospy.logwarn("[orchestrator] handover aborted (%s): %s", why, response.message)
         except Exception as exc:  # noqa: BLE001 - cleanup must never raise
-            rospy.logerr("[orchestrator] disable_motion failed: %s", exc)
+            rospy.logerr("[orchestrator] /handover/abort failed (%s): %s", why, exc)
+        self._handover_open = False
+
+    def disarm_monitor_cleanup(self):
+        """A route must never exit leaving g1_hands' monitor armed."""
+        if self._handover_open:
+            self._abort_handover("route exit")
 
 
 class OrchestratorNode:
@@ -756,6 +1041,11 @@ class OrchestratorNode:
             require_event_token=bool(rospy.get_param("~require_event_token", True)))
         self.probe = RosProbe(float(rospy.get_param("~service_timeout_s", 1.0)))
         self.status_pub = rospy.Publisher("/orchestrator/status", String, queue_size=1, latch=True)
+        # fetch_deliver: where the standing waypoints live, and the perception
+        # label used when the request carries none.
+        self.maps_dir = str(rospy.get_param("~maps_dir", "") or "")
+        self.map_name = str(rospy.get_param("~map_name", "current") or "current")
+        self.default_label = str(rospy.get_param("~default_label", "bottle") or "bottle")
 
         if self.side not in ("left", "right"):
             rospy.logfatal("[orchestrator] ~side must be left or right, got %r", self.side)
@@ -816,6 +1106,49 @@ class OrchestratorNode:
         """The delivery waypoint, or "" when the request carries none."""
         return (getattr(req, "destination", "") or "").strip()
 
+    def _label(self, req) -> str:
+        """The perception label: the request's, else ~default_label."""
+        return (getattr(req, "label", "") or "").strip() or self.default_label
+
+    def _maps_dir(self) -> str:
+        if self.maps_dir:
+            return self.maps_dir
+        import os
+        from rospkg import RosPack
+        return os.path.join(RosPack().get_path("g1_slam"), "maps")
+
+    def _route_blockers(self, route, req) -> tuple:
+        """Request-specific blockers, found BEFORE preflight: (standing, blockers).
+
+        fetch_deliver names standing waypoints and relies on handover_node being
+        launched for the same arm. Both are checked here so a dry run reports
+        them and a real run refuses before the first drive.
+        """
+        standing, blockers = {}, []
+        if route.name not in routes_mod.ROUTES_USING_STANDING_WAYPOINTS:
+            return standing, blockers
+        try:
+            maps_dir = self._maps_dir()
+        except Exception as exc:  # noqa: BLE001
+            return standing, ["standing_waypoints (slam): cannot locate g1_slam/maps: %s" % exc]
+        standing, blockers = sw.resolve_standing_waypoints(
+            maps_dir, self.map_name,
+            {"pickup": req.target, "delivery": self._destination(req)})
+        handover_arm = str(rospy.get_param("/handover/arm", "") or "").strip().lower()
+        if handover_arm and handover_arm != self.side:
+            blockers.append(
+                "handover_node (handover): launched for the %s arm but this orchestrator "
+                "grasps with the %s; pass the same side to both launches"
+                % (handover_arm, self.side))
+        return standing, blockers
+
+    @staticmethod
+    def _make_backend(route, side, timeouts):
+        """The real backend for `route`. Only ever called for a motion run."""
+        if route.name in routes_mod.ROUTES_USING_STANDING_WAYPOINTS:
+            return ArmGraspBackend(side, timeouts)
+        return RosBackend(side, timeouts)
+
     def run(self, route_name: str, req) -> RunRouteResponse:
         route = routes_mod.resolve_route(route_name)
 
@@ -853,14 +1186,18 @@ class OrchestratorNode:
 
     def _execute(self, route, req, dry_run: bool) -> RunRouteResponse:
         destination = self._destination(req)
+        label = self._label(req)
         self.status_pub.publish(
             String(data="%s: preflight (%s)" % (route.name, "dry-run" if dry_run else "MOTION"))
         )
 
         result = pf.run_preflight(route, self.probe, self.side)
-        blockers = result.blockers
+        standing, extra = self._route_blockers(route, req)
+        blockers = list(result.blockers) + list(extra)
         if blockers:
             rospy.logwarn("[orchestrator] %s", result.summary())
+            for text in extra:
+                rospy.logwarn("[orchestrator] blocker: %s", text)
 
         if dry_run:
             # Traverse the route regardless, so the rehearsal is useful even
@@ -868,7 +1205,8 @@ class OrchestratorNode:
             # would have refused on.
             backend = seq.DryRunBackend()
             ctx = seq.RouteContext(route=route.name, target=req.target,
-                                   destination=destination, side=self.side,
+                                   destination=destination, label=label,
+                                   standing=standing, side=self.side,
                                    dry_run=True, handover=self.handover)
             run = seq.run_route(route, backend, ctx, req.start_step, self.retry, blockers=[])
             message = "DRY RUN: %s" % run.message
@@ -894,7 +1232,7 @@ class OrchestratorNode:
             )
 
         try:
-            backend = RosBackend(self.side, self.timeouts)
+            backend = self._make_backend(route, self.side, self.timeouts)
             backend.await_pull_timeout_sec = float(
                 self.timeouts.get("await_pull_sec", 120.0))
         except Exception as exc:  # noqa: BLE001 - a missing srv module is a blocker
@@ -906,7 +1244,8 @@ class OrchestratorNode:
             )
 
         ctx = seq.RouteContext(route=route.name, target=req.target,
-                               destination=destination, side=self.side,
+                               destination=destination, label=label,
+                               standing=standing, side=self.side,
                                dry_run=False, handover=self.handover)
         self.status_pub.publish(String(data="%s: RUNNING" % route.name))
         run = seq.run_route(route, backend, ctx, req.start_step, self.retry, blockers=[])
@@ -935,6 +1274,9 @@ def main() -> None:
         # composed in-process under ONE execution lock. It never calls
         # run_grasp or run_deliver, which would deadlock against its own lock.
         ("deliver_task", "/orchestrator/run_deliver_task"),
+        # The spoken task on the modules that have run on this robot: standing
+        # waypoints, perception, arm_grasp, handover_node. See routes.FETCH_DELIVER.
+        ("fetch_deliver", "/orchestrator/run_fetch_deliver"),
     ):
         rospy.Service(service, RunRoute, node.make_handler(route_name))
 

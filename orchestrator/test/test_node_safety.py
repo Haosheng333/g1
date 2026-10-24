@@ -131,10 +131,11 @@ class PreflightPatch(StubbedRospy):
     """Base class that restores both the rospy stub and the real preflight."""
 
 
-def request(route="", target="table", start_step="", dry_run=False, event_token=""):
+def request(route="", target="table", start_step="", dry_run=False, event_token="",
+            destination="", label=""):
     return types.SimpleNamespace(
-        route=route, target=target, start_step=start_step, dry_run=dry_run,
-        event_token=event_token,
+        route=route, target=target, destination=destination, label=label,
+        start_step=start_step, dry_run=dry_run, event_token=event_token,
     )
 
 
@@ -179,7 +180,7 @@ class DryRunIsTheDefault(PreflightPatch):
             line = line.split("#")[0].strip()
             if line:
                 names.append(line.split()[1])
-        self.assertEqual(names, ["route", "target", "destination", "start_step",
+        self.assertEqual(names, ["route", "target", "destination", "label", "start_step",
                                  "dry_run", "event_token"])
         for forbidden in ("force", "enable_motion", "allow_motion", "execute"):
             self.assertNotIn(forbidden, names)
@@ -315,13 +316,16 @@ class NoRoboticsInsideOrchestrator(unittest.TestCase):
         """
         code = executable_source(NODE_SOURCE)
         for forbidden in ("def plan_to_pose", "def plan_grasp_from_point",
-                          "def _solve_ik", "def _ik", "def forward_kinematics"):
+                          "def execute_grasp_from_point", "def _execute_grasp_pipeline",
+                          "def _solve_ik", "def _ik", "def forward_kinematics",
+                          "interp_joint_waypoints"):
             self.assertNotIn(forbidden, code,
                              "the orchestrator must not define %r" % forbidden)
         # Every occurrence must be the service path, the proxy attribute, the
         # generated type, or a label inside a message string -- never a local
         # definition or a local call.
         allowed = ("/arm/plan_to_pose", "/arm/plan_grasp_from_point",
+                   "/g1_arm_simple/plan_grasp_from_point",      # arm_grasp, fetch_deliver
                    "self._plan_to_pose", "self._plan_grasp_from_point",
                    "PlanToPose", "PlanGraspFromPoint",
                    '"plan_to_pose', '"plan_grasp_from_point')
@@ -345,12 +349,13 @@ class NoRoboticsInsideOrchestrator(unittest.TestCase):
             code = executable_source(os.path.join(PKG_SRC, name))
             self.assertNotIn("import rospy", code, name)
 
-    def test_only_the_five_routes_are_advertised(self):
-        """run_deliver_task is the full-task entry point (spec 0.4 / 6.2).
+    def test_only_the_six_routes_are_advertised(self):
+        """run_deliver_task is the full-task entry point (spec 0.4 / 6.2);
+        run_fetch_deliver is the spoken task on arm_grasp + handover_node.
 
-        It composes the grasp and delivery steps IN-PROCESS under one execution
-        lock; it must never appear as a service call from inside the node, which
-        would deadlock against that same lock.
+        Each composes its steps IN-PROCESS under one execution lock; none may
+        appear as a service call from inside the node, which would deadlock
+        against that same lock.
         """
         code = executable_source(NODE_SOURCE)
         advertised = sorted(set(re.findall(r'"(/orchestrator/run_[a-z_]+)"', code)))
@@ -358,6 +363,7 @@ class NoRoboticsInsideOrchestrator(unittest.TestCase):
             "/orchestrator/run_auto_release",
             "/orchestrator/run_deliver",
             "/orchestrator/run_deliver_task",
+            "/orchestrator/run_fetch_deliver",
             "/orchestrator/run_grasp",
             "/orchestrator/run_navigate_report",
         ])

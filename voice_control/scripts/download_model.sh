@@ -32,7 +32,12 @@ fi
 echo "downloading $URL ..."
 ZIP_PATH="$MODELS_DIR/$NAME.zip"
 curl -L -o "$ZIP_PATH" "$URL"
-unzip -q "$ZIP_PATH" -d "$MODELS_DIR"
+# The ROS container ships no `unzip`; python3 is always there.
+if command -v unzip >/dev/null 2>&1; then
+  unzip -q "$ZIP_PATH" -d "$MODELS_DIR"
+else
+  python3 -m zipfile -e "$ZIP_PATH" "$MODELS_DIR"
+fi
 rm -f "$ZIP_PATH"
 
 echo "installed: $DEST"

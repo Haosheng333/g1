@@ -12,16 +12,23 @@ State is intentionally small and explicit:
   BUSY            -- confirmation produced a single-use DispatchAction and
                      the route call is ready or in flight on a worker
 
-Commands that need confirmation: "grasp", "deliver" (they can move the robot
-and cost real time/wear to undo). "status" and "cancel" are handled by the
-caller without going through this state machine -- status is a read, and
-cancel has no route to confirm into.
+Commands that need confirmation: "grasp", "deliver", "fetch_deliver" (they
+can move the robot and cost real time/wear to undo). "status" is handled by
+the caller without going through this state machine -- it is a read. "cancel"
+drops a pending command here; it has no route to confirm into.
+
+Two confirmation modes:
+  confirm        a pending command dispatches only on an explicit "confirm"
+                 inside the window; silence lets it expire (default).
+  cancel_window  g1_intellect task_confirm_node's behaviour: the window is a
+                 chance to say "cancel"; when it closes the command DISPATCHES.
+                 Selected by `auto_dispatch_after_window=True`.
 """
 
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Optional, Protocol
 
@@ -33,7 +40,7 @@ class State(Enum):
 
 
 # Commands that require a separate confirmation before they can dispatch.
-CONFIRMABLE_COMMANDS = ("grasp", "deliver")
+CONFIRMABLE_COMMANDS = ("grasp", "deliver", "fetch_deliver")
 
 
 @dataclass(frozen=True)
@@ -54,7 +61,7 @@ class RouteClient(Protocol):
     real rospy ServiceProxy wrapper (orchestrator_client.RosRouteClient) and,
     for tests and the default safe mode, by RecordingDryRunClient below."""
 
-    def call_route(self, command_id: str, target: str, dry_run: bool) -> RouteCallResult: ...
+    def call_route(self, command_id: str, target: str, dry_run: bool, **slots) -> RouteCallResult: ...
 
 
 class RecordingDryRunClient:
@@ -66,11 +73,14 @@ class RecordingDryRunClient:
     def __init__(self) -> None:
         self.calls: list = []
 
-    def call_route(self, command_id: str, target: str, dry_run: bool) -> RouteCallResult:
-        self.calls.append({"command_id": command_id, "target": target, "dry_run": True})
+    def call_route(self, command_id: str, target: str, dry_run: bool, **slots) -> RouteCallResult:
+        call = {"command_id": command_id, "target": target, "dry_run": True}
+        call.update(slots)
+        self.calls.append(call)
+        extra = "".join(f" {k}={v!r}" for k, v in sorted(slots.items()))
         return RouteCallResult(
             success=True,
-            message=f"dry run: would call route for {command_id!r} with target={target!r}",
+            message=f"dry run: would call route for {command_id!r} with target={target!r}{extra}",
             dry_run=True,
         )
 
@@ -81,6 +91,8 @@ class PendingCommand:
     target: str
     issued_at: float
     expires_at: float
+    #: fetch_deliver: destination and label, forwarded to the route call.
+    slots: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -105,6 +117,7 @@ class DispatchAction:
     action_id: int
     command_id: str
     target: str
+    slots: dict = field(default_factory=dict)
 
 
 class Dispatcher:
@@ -114,10 +127,14 @@ class Dispatcher:
         clock: Callable[[], float],
         confirmation_window_sec: float = 8.0,
         target_resolver: Optional[Callable[[str], Optional[str]]] = None,
+        auto_dispatch_after_window: bool = False,
     ) -> None:
         self._client = route_client
         self._clock = clock
         self._window = float(confirmation_window_sec)
+        # cancel_window mode: when the window closes with no cancel, the
+        # pending command dispatches instead of expiring.
+        self._auto_dispatch = bool(auto_dispatch_after_window)
         # Maps a command_id ("grasp"/"deliver") to its configured target, or
         # None if unset. Kept injectable so tests don't need a YAML file.
         self._target_resolver = target_resolver or (lambda command_id: None)
@@ -145,8 +162,19 @@ class Dispatcher:
         return False
 
     def poll_expiry(self) -> Optional[DispatchEvent]:
-        """Expire a pending command without waiting for another utterance."""
+        """Expire a pending command without waiting for another utterance.
+
+        In cancel_window mode a due command is DISPATCHED instead: the returned
+        event carries the single-use action, exactly as a spoken confirm would.
+        """
         with self._lock:
+            if self._auto_dispatch and self._pending is not None \
+                    and self._clock() >= self._pending.expires_at:
+                event = self._start_action(self._pending)
+                return DispatchEvent(
+                    "dispatch_ready",
+                    "cancel window closed with no cancel; " + event.detail,
+                    dispatch_action=event.dispatch_action)
             if not self._expire_if_due():
                 return None
             return DispatchEvent("expired", "pending command expired without dispatch")
@@ -168,12 +196,12 @@ class Dispatcher:
             return DispatchEvent("fault", f"{detail}{suffix}")
 
     # -- the one entry point for a matched command ---------------------------
-    def handle_command(self, command_id: str) -> DispatchEvent:
+    def handle_command(self, command_id: str, slots: Optional[dict] = None) -> DispatchEvent:
         with self._lock:
             self._expire_if_due()
 
             if command_id in CONFIRMABLE_COMMANDS:
-                return self._handle_task_start(command_id)
+                return self._handle_task_start(command_id, dict(slots or {}))
             if command_id == "confirm":
                 return self._handle_confirm()
             if command_id == "cancel":
@@ -183,11 +211,13 @@ class Dispatcher:
                 "the node reads it directly from the latched topic"
             )
 
-    def _handle_task_start(self, command_id: str) -> DispatchEvent:
+    def _handle_task_start(self, command_id: str, slots: dict) -> DispatchEvent:
         if self.state is State.BUSY:
             return DispatchEvent("rejected", f"busy executing {self.last_route_command!r}; try again after it finishes")
 
-        target = self._target_resolver(command_id)
+        # The slot grammar carries its own target (the pickup waypoint it
+        # parsed); the fixed phrases take the configured one.
+        target = slots.pop("target", None) or self._target_resolver(command_id)
         if target is None:
             return DispatchEvent(
                 "rejected",
@@ -198,11 +228,19 @@ class Dispatcher:
         # A fresh task-start utterance REPLACES any not-yet-confirmed pending
         # command (nothing has executed yet, so there is nothing to protect
         # by keeping the stale one) rather than stacking requests.
-        self._pending = PendingCommand(command_id=command_id, target=target, issued_at=now, expires_at=now + self._window)
+        self._pending = PendingCommand(command_id=command_id, target=target, issued_at=now,
+                                       expires_at=now + self._window, slots=dict(slots))
         self.state = State.PENDING_CONFIRM
+        described = f"target={target!r}" + "".join(f" {k}={v!r}" for k, v in sorted(slots.items()))
+        if self._auto_dispatch:
+            return DispatchEvent(
+                "awaiting_confirmation",
+                f"heard {command_id!r} ({described}); starts in {self._window:.0f}s unless "
+                f"\"取消任务\" / \"cancel task\" is said",
+            )
         return DispatchEvent(
             "awaiting_confirmation",
-            f"heard {command_id!r} (target={target!r}); say “确认执行” / \"confirm\" within {self._window:.0f}s",
+            f"heard {command_id!r} ({described}); say “确认执行” / \"confirm\" within {self._window:.0f}s",
         )
 
     def _handle_confirm(self) -> DispatchEvent:
@@ -211,7 +249,10 @@ class Dispatcher:
         if self._pending is None:
             return DispatchEvent("ignored", "nothing pending to confirm")
 
-        pending = self._pending
+        return self._start_action(self._pending)
+
+    def _start_action(self, pending: PendingCommand) -> DispatchEvent:
+        """Turn the pending command into a single-use action; state -> BUSY."""
         self._pending = None
         self.state = State.BUSY
         self.last_route_command = pending.command_id
@@ -219,6 +260,7 @@ class Dispatcher:
             action_id=self._next_action_id,
             command_id=pending.command_id,
             target=pending.target,
+            slots=dict(pending.slots),
         )
         self._next_action_id += 1
         self._active_action_id = action.action_id
@@ -239,7 +281,8 @@ class Dispatcher:
             self._action_started = True
 
         try:
-            result = self._client.call_route(action.command_id, action.target, dry_run=False)
+            result = self._client.call_route(action.command_id, action.target, dry_run=False,
+                                             **action.slots)
         except Exception as exc:  # noqa: BLE001 - a raising call is a failed call, not a crash
             result = RouteCallResult(success=False, message=f"{type(exc).__name__}: {exc}")
 

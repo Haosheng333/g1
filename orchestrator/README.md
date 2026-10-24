@@ -14,15 +14,112 @@ planner, a quaternion conversion or a Unitree topic.
 | `/orchestrator/run_navigate_report` | `orchestrator/RunRoute` | navigate → perceive → report |
 | `/orchestrator/run_grasp` | `orchestrator/RunRoute` | full grasp (**NOT_READY**, see below) |
 | `/orchestrator/run_deliver` | `orchestrator/RunRoute` | carry to a waypoint, arm the handover monitor |
-| `/orchestrator/run_auto_release` | `orchestrator/RunRoute` | open the hand, disarm the monitor |
+| `/orchestrator/run_deliver_task` | `orchestrator/RunRoute` | grasp then deliver, one lock (**NOT_READY**) |
+| `/orchestrator/run_fetch_deliver` | `orchestrator/RunRoute` | **the spoken task** on arm_grasp + handover_node, see below |
+| `/orchestrator/run_auto_release` | `orchestrator/RunRoute` | validate and record a release request |
 
 `/orchestrator/status` (`std_msgs/String`, latched) reports the current phase.
 `/orchestrator/run_auto_release` is what `handover`'s monitor calls after it
 verifies a release.
 
-Request: `route` (optional guard), `target`, `start_step` (resume point),
-`dry_run`. Response: `success`, `message`, `steps_completed`, `steps_skipped`,
-`blockers`, `final_step`, `motion_issued`, `dry_run`.
+Request: `route` (optional guard), `target`, `destination`, `label`,
+`start_step` (resume point), `dry_run`, `event_token`. Response: `success`,
+`message`, `steps_completed`, `steps_skipped`, `blockers`, `final_step`,
+`motion_issued`, `dry_run`, `object_state`, `transfer_verified`.
+
+## `fetch_deliver`: the spoken task
+
+```
+"go to the desk, pick up a can, go to the chair, and pass me, over"
+    voice_control -> /orchestrator/run_fetch_deliver
+        {target: table_01, destination: chair_01, label: bottle}
+```
+
+This is g1_intellect `main_process`'s navigate -> grasp -> navigate -> handover
+plan, sequenced through DIP's own interfaces, and it is a **separate route**
+because it runs on a different stack from `deliver_task`: the modules that have
+actually been exercised on this robot.
+
+| Step | Interface | Owner |
+|---|---|---|
+| `await_localization` | `/slam/manager/state` | slam |
+| `enable_motion` | `/navigation/enable_motion` | navigation |
+| `navigate_to_pickup` | **standing pose** `target` -> `/move_base_simple/goal`, saw_active guard on `/navigation/status` | slam (`standing_waypoints.yaml`) + navigation |
+| `settle_at_pickup` | sleep `timeouts.nav_settle_sec` (1.5 s) | |
+| `detect_object` | `/perception/get_object_position(label)`, in `torso_link` | perception |
+| `plan_grasp_point` | `/g1_arm_simple/plan_grasp_from_point`, **no motion** | arm_grasp |
+| `execute_grasp` | `/g1_arm_simple/execute_grasp_from_point`: pregrasp, hand `pre_grasp`, approach, `grasp_5f`, lift, retract, home | arm_grasp (+ g1_hands on PC2) |
+| `record_held_object` | `HandoverState.begin()` | this package |
+| `hand_back_arms` | `/g1_arm_simple/release_arm_control` (best effort, see below) | arm_grasp |
+| `navigate_to_recipient` | standing pose `destination` | slam + navigation |
+| `settle_at_recipient` | sleep | |
+| `handover_start` | `/handover/start`: held arm to the handover pose, g1_hands' tactile monitor armed | handover (`handover_node.py`) |
+| `await_handover` | `/handover/state` until `done`; timeout -> `/handover/abort`, **nothing released** | handover |
+| `hand_back_arms_after_handover` | `/g1_arm_simple/release_arm_control` | arm_grasp |
+
+What is different from the older routes, and why:
+
+* **No frame conversion.** perception reports in `torso_link`, which is the
+  frame arm_grasp plans in. The `perception_extrinsics` / frame-contract
+  blockers of `grasp` do not apply; the extrinsics were fitted and measured for
+  this camera (`perception/README.md`).
+* **Standing poses, not `semantic.yaml`.** `target` and `destination` are names
+  from `slam/maps/<map>/standing_waypoints.yaml` (recorded with
+  `rosrun g1_slam record_waypoints.py`), driven through navigation's exact-pose
+  topic with **no approach offset**, via `g1_slam.standing_goal` -- the same
+  code `goto_waypoint.py` uses. The node resolves both names **before
+  preflight** and checks the file's map identity against the live manifest, so
+  a missing record or a map mismatch is a blocker, not a surprise after the
+  first drive. `~map_name` (launch arg `map_name`) selects the map.
+* **The grasp is arm_grasp's.** `plan_grasp_point` plans everything with the
+  arm parked; `execute_grasp` then runs the whole pipeline inside
+  `g1_arm_simple`, exactly as `grasp_point.py grasp` does. A failed grasp
+  leaves the arm under SDK control; the message says to park it with
+  `rosrun arm_grasp grasp_point.py home`.
+* **Arm hand-back before walking.** `main_process` releases the arms to the
+  G1's own controller before every walking leg (`@walking_task`) and after
+  every arm task. `release_arm_control` does the same; arm_grasp refuses it
+  unless both arms are at home, in which case the step reports that and the
+  robot walks with the SDK holding the arm, as main_process does. It is the
+  one step that never fails the route.
+* **The handover is handover_node's.** `/handover/start` returns once the arm
+  is at the pose and the monitor armed; `await_handover` then only *watches*
+  `/handover/state`. The release (hand open, settle, `GoHomeArm`) runs inside
+  handover_node when the monitor detects the pull. `done` records a
+  **commanded** release and closes the task record; `error:*` marks the object
+  `UNCERTAIN`; a timeout (`timeouts.handover_sec`, 120 s) aborts the handover
+  -- monitor disarmed, hand still closed, arm left at the pose -- and the route
+  fails with the manual command (`rosrun handover handover_cli.py release`).
+  Cleanup aborts an open handover on every other exit path too.
+* **One arm, declared twice.** The orchestrator's `side` is the grasping arm;
+  `handover.launch arm:=` must be the same. The node reads `/handover/arm` and
+  reports a mismatch as a blocker.
+* **Preflight** requires `localization`, `map`, `joint_states`, `navigation`,
+  `motion_gate`, `perception`, `arm_grasp` (the three `g1_arm_simple`
+  services), `remote_hands` (`/g1_hand_<side>/{pre_grasp,grasp_5f,release}`,
+  started with `rosrun hand_control start_remote_hands.sh`) and
+  `handover_node` (`/handover/{start,abort}`, `/auto_release_monitor/{arm,disarm}`,
+  `/handover/state`). None of them is an unresolved decision, so with every
+  node up the route is **ready in principle**; it has not yet been run end to
+  end on the robot through this orchestrator.
+
+```bash
+roslaunch system_bringup fetch_deliver.launch map_name:=lab_map_DIP joint_mode:=relay joint_input_topic:=/arm/joint_states
+rosrun perception start_remote_camera.sh                        # D455 driver on PC2
+rosrun hand_control start_remote_hands.sh                       # hands on PC2
+rosservice call /orchestrator/run_fetch_deliver "{target: table_01, destination: chair_01, label: bottle}"   # dry run
+# ... clear the blockers it lists, then relaunch with enable_motion:=true
+```
+
+`tools/fetch_deliver_pipeline.sh` starts each of these as its own `roslaunch`
+(logs and PIDs under `~/.ros/fetch_deliver/`), `tools/fetch_deliver_check.py`
+prints the readiness checklist (PASS / WAIT / FAIL per interface, the two
+standing waypoints, the handover arm, a perception read) and ends with the dry
+run; exit code 0 means a real run is possible.
+
+The real backend for this route is `ArmGraspBackend`; the older routes keep
+`RosBackend` (arm_planning / arm_control / hand_control). Both share
+`RosCommon`, and neither is constructed for a dry run.
 
 ## Safety model
 
@@ -248,7 +345,9 @@ retrying a motion step is not safe by default; `close_gripper` is 3 because
 cd orchestrator/test && python3 -m unittest discover -s . -v
 ```
 
-95 offline tests, no ROS master: route order and resume, the blocked grasp,
+Offline tests, no ROS master: route order and resume, the blocked grasp,
+the fetch_deliver order and its standing-waypoint blockers
+(`test_fetch_deliver_node.py`, against the real `g1_slam` resolver),
 preflight blocker collection, WAIT vs false flags, the `saw_active` guard
 (including that a stale SUCCESS can never be rescued by a timeout), the
 non-blocking lock, dry-run traversal of every route, fail-fast, retries,

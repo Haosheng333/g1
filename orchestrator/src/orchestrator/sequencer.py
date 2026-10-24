@@ -52,6 +52,13 @@ class RouteContext:
     #: Second destination for the composed full task. `target` is the pickup
     #: waypoint / object label; this is the delivery point B.
     destination: str = ""
+    #: Perception label, for routes whose `target` is a waypoint name and cannot
+    #: double as the label. Empty = use `target` (the older routes' convention).
+    label: str = ""
+    #: fetch_deliver: the standing-waypoint records the node resolved BEFORE
+    #: preflight: {"pickup": (key, record, frame), "delivery": (...)}. The
+    #: navigate_standing actions read them; nothing here recomputes a pose.
+    standing: dict = field(default_factory=dict)
     #: Filled by plan_grasp / plan_handover_pose / the pose planners:
     #: segment name -> {"flat": [...], "count": N, "joint_names": [...]}.
     #: Consumed verbatim by execute_segment; nothing re-plans at execution time.
@@ -214,6 +221,31 @@ class Backend(object):
     def release_hand(self, ctx):
         raise NotImplementedError
 
+    # --- fetch_deliver actions (arm_grasp + handover_node + standing waypoints) --
+    def navigate_standing(self, ctx):
+        raise NotImplementedError
+
+    def navigate_standing_destination(self, ctx):
+        raise NotImplementedError
+
+    def settle_chassis(self, ctx):
+        raise NotImplementedError
+
+    def plan_grasp_point(self, ctx):
+        raise NotImplementedError
+
+    def execute_grasp_point(self, ctx):
+        raise NotImplementedError
+
+    def release_arm_control(self, ctx):
+        raise NotImplementedError
+
+    def handover_start(self, ctx):
+        raise NotImplementedError
+
+    def await_handover(self, ctx):
+        raise NotImplementedError
+
     # --- cleanup, always called -----------------------------------------------------
     def cancel_navigation(self):
         raise NotImplementedError
@@ -324,6 +356,33 @@ class DryRunBackend(Backend):
 
     def execute_retract_home(self, ctx):
         return self._record("execute_retract_home", "dry run: arm NOT moved")
+
+    # fetch_deliver
+    def navigate_standing(self, ctx):
+        return self._record("navigate_standing",
+                            "dry run: NOT driving to standing pose %r" % (ctx.target,))
+
+    def navigate_standing_destination(self, ctx):
+        return self._record("navigate_standing_destination",
+                            "dry run: NOT driving to standing pose %r" % (ctx.destination,))
+
+    def settle_chassis(self, ctx):
+        return self._record("settle_chassis", "dry run: not waited")
+
+    def plan_grasp_point(self, ctx):
+        return self._record("plan_grasp_point", "dry run: arm_grasp plan NOT requested")
+
+    def execute_grasp_point(self, ctx):
+        return self._record("execute_grasp_point", "dry run: grasp NOT executed")
+
+    def release_arm_control(self, ctx):
+        return self._record("release_arm_control", "dry run: arms NOT handed back")
+
+    def handover_start(self, ctx):
+        return self._record("handover_start", "dry run: handover NOT started")
+
+    def await_handover(self, ctx):
+        return self._record("await_handover", "dry run: no pull awaited")
 
     def cancel_navigation(self):
         self.cleanup.append("cancel_navigation")

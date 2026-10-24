@@ -130,6 +130,38 @@ Frames: `map` (z-up, saved map) -> `camera_init` (relocalizer) -> `pelvis`
 (g1_tf_publisher, needs REAL `/joint_states`). `base_link` is an OPTIONAL identity alias of
 `pelvis` published by `system_bringup` (`with_base_link`, ON by default; see docs/FRAME_CONTRACT.md).
 
+## Run (the spoken task: fetch and deliver)
+
+"go to the desk, pick up a can, go to the chair, and pass me, over" runs as
+`/orchestrator/run_fetch_deliver` on standing waypoints + perception +
+arm_grasp + handover_node (see `orchestrator/README.md`). Dry run by default:
+
+```bash
+roslaunch system_bringup fetch_deliver.launch map_name:=lab_map_DIP joint_mode:=relay joint_input_topic:=<topic>
+rosrun perception start_remote_camera.sh                       # D455 driver on PC2, separate shell
+rosrun hand_control start_remote_hands.sh                      # hands on PC2, separate shell
+rosservice call /orchestrator/run_fetch_deliver "{target: table_01, destination: chair_01, label: bottle}"
+# voice frontend (Vosk, English model, grammar from voice_control/config/lexicon.yaml):
+roslaunch system_bringup fetch_deliver.launch ... voice_control:=true voice_dry_run_backend:=false
+```
+
+Or, one `roslaunch` per component in the background with logs and a
+PASS/WAIT/FAIL checklist (inside the container):
+
+```bash
+tools/fetch_deliver_pipeline.sh start          # roscore, navigation, camera (PC2), perception,
+                                               # arm_grasp, hands (PC2), handover, orchestrator (dry run)
+tools/fetch_deliver_pipeline.sh check          # readiness checklist + dry run, exit 0 = ready
+ENABLE_MOTION=true tools/fetch_deliver_pipeline.sh restart orchestrator
+tools/fetch_deliver_pipeline.sh stop
+```
+
+`side` (default left) is passed to both the orchestrator and handover_node.
+`enable_motion:=true` is the only way anything moves. The Vosk model is
+downloaded explicitly with `voice_control/scripts/download_model.sh en`
+(the container has no `unzip`; the script falls back to python). The
+workstation microphone is sounddevice index 4 (`ALC245 Analog`, hw:1,0).
+
 ## Run (SLAM)
 
 One `docker/g1.sh enter` shell per ROS process. In every shell that runs a

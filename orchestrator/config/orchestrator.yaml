@@ -48,6 +48,19 @@ timeouts:
   # own default, which is the safer choice until a real arm has been timed.
   waypoint_sec: 0.0
 
+  # --- fetch_deliver ---------------------------------------------------------------
+  # Chassis settle after each standing-pose drive, before the camera is read /
+  # the arm plans (g1_intellect's NAV_TO_GRASP_SETTLE_SEC).
+  nav_settle_sec: 1.5
+  # Per-move timeout passed to /g1_arm_simple/execute_grasp_from_point, the same
+  # value arm_grasp's grasp_point.py uses.
+  grasp_move_sec: 6.0
+  # How long await_handover waits on /handover/state for `done` after the
+  # monitor is armed. A timeout calls /handover/abort (monitor disarmed, arm
+  # left at the handover pose, hand still closed) and the route FAILS; the
+  # object is then released by hand: `rosrun handover handover_cli.py release`.
+  handover_sec: 120.0
+
 # --- arm poses -------------------------------------------------------------------------
 # EMPTY ON PURPOSE. Each entry would be [x, y, z, rx, rz] in torso_link, metres
 # and radians, matching PlanToPose.srv's target_pose.
@@ -70,6 +83,18 @@ poses: {}
 
 # How long preflight waits for each service to appear before calling it missing.
 service_timeout_s: 1.0
+
+# --- fetch_deliver -------------------------------------------------------------------
+# `target` / `destination` of /orchestrator/run_fetch_deliver are STANDING
+# waypoint names (slam/maps/<map>/standing_waypoints.yaml, recorded with
+# `rosrun g1_slam record_waypoints.py`), resolved against this map before
+# preflight. Empty maps_dir = <g1_slam>/maps. map_name "current" follows the
+# symlink the last save / localization launch set.
+maps_dir: ""
+map_name: current
+# Perception label when the request's `label` is empty. The fine-tuned detector
+# only knows "bottle" (the 14 cm can).
+default_label: bottle
 
 # --- retries ---------------------------------------------------------------------------
 # Attempts per backend ACTION name. Anything unlisted gets exactly one attempt,

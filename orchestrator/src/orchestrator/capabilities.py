@@ -34,6 +34,12 @@ HANDOVER_POSE = "handover_pose"
 STOW_POSE = "stow_pose"
 HOME_POSE = "home_pose"
 RELEASE_COMPLETION = "release_completion"
+#: The fetch_deliver route composes the modules that have actually been run on
+#: this robot: arm_grasp (g1_arm_simple), the Revo2 hands served from PC2, and
+#: handover_node. These are plain service probes, nothing unresolved.
+ARM_GRASP = "arm_grasp"
+REMOTE_HANDS = "remote_hands"
+HANDOVER_NODE = "handover_node"
 
 
 @dataclass(frozen=True)
@@ -167,6 +173,34 @@ CAPABILITIES = {
         # wrong and neither was modified: a declared convention translation of
         # -0.010 m in z is applied after the TF lookup, exact at every waist
         # angle because the waist rotates about z.
+    ),
+    ARM_GRASP: Capability(
+        key=ARM_GRASP, owner="arm_grasp",
+        # arm_node_abs.py (node g1_arm_simple): plan first with no motion, then
+        # the all-in-one grasp pipeline (pregrasp, hand pre_grasp, approach,
+        # grasp_5f, lift, retract, home), then hand the arms back to the robot's
+        # own controller before walking.
+        services=("/g1_arm_simple/plan_grasp_from_point",
+                  "/g1_arm_simple/execute_grasp_from_point",
+                  "/g1_arm_simple/release_arm_control"),
+    ),
+    REMOTE_HANDS: Capability(
+        key=REMOTE_HANDS, owner="hand_control (start_remote_hands.sh, g1_hands on PC2)",
+        # The hands arm_grasp actually calls. Started from this workstation with
+        # `rosrun hand_control start_remote_hands.sh`; checked here so a missing
+        # hand is a preflight blocker, not a failure after the arm has moved.
+        services=("/g1_hand_{side}/pre_grasp", "/g1_hand_{side}/grasp_5f",
+                  "/g1_hand_{side}/release"),
+    ),
+    HANDOVER_NODE: Capability(
+        key=HANDOVER_NODE, owner="handover (handover_node.py + g1_hands auto_release_monitor)",
+        # handover.launch: handover_node drives the held arm to the handover
+        # pose and arms the tactile monitor, whose detected pull calls back
+        # /handover/run_auto_release (release, settle, GoHomeArm). The monitor's
+        # own services are probed too: without them /handover/start cannot arm.
+        services=("/handover/start", "/handover/abort",
+                  "/auto_release_monitor/arm", "/auto_release_monitor/disarm"),
+        topics=("/handover/state",),
     ),
     PERCEPTION_EXTRINSICS: Capability(
         key=PERCEPTION_EXTRINSICS, owner="perception",

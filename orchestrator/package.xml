@@ -33,6 +33,11 @@
   <exec_depend>arm_control</exec_depend>
   <!-- handover/ArmMonitor.srv: the arm request carries side + session_token. -->
   <exec_depend>handover</exec_depend>
+  <!-- fetch_deliver: arm_grasp's g1_arm_simple services, standing waypoints
+       read through g1_slam.standing_goal, and the PoseStamped goal it builds. -->
+  <exec_depend>arm_grasp</exec_depend>
+  <exec_depend>g1_slam</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
 
   <export>
     <catkin_python_setup />

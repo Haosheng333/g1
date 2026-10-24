@@ -26,10 +26,14 @@ from g1_voice_control.dispatch import RouteCallResult
 COMMAND_TO_SERVICE = {
     "grasp": "/orchestrator/run_grasp",
     "deliver": "/orchestrator/run_deliver",
+    # The spoken task: target = pickup standing waypoint, destination =
+    # delivery standing waypoint, label = perception class.
+    "fetch_deliver": "/orchestrator/run_fetch_deliver",
 }
 COMMAND_TO_ROUTE_NAME = {
     "grasp": "grasp",
     "deliver": "deliver",
+    "fetch_deliver": "fetch_deliver",
 }
 STATUS_TOPIC = "/orchestrator/status"
 
@@ -70,7 +74,8 @@ class RosRouteClient:
                 self._proxies[command_id] = proxy
             return proxy
 
-    def call_route(self, command_id: str, target: str, dry_run: bool) -> RouteCallResult:
+    def call_route(self, command_id: str, target: str, dry_run: bool,
+                   destination: str = "", label: str = "") -> RouteCallResult:
         if command_id not in COMMAND_TO_SERVICE:
             # Defensive: dispatch.py should never reach here for an
             # unmapped command, but refuse loudly rather than guess a
@@ -81,10 +86,11 @@ class RosRouteClient:
         resp = proxy(
             route=COMMAND_TO_ROUTE_NAME[command_id],
             target=target,
-            # The current RunRoute.srv includes a second waypoint for the
-            # composed deliver_task route. Voice commands deliberately call
-            # the separate grasp/deliver routes, so it is explicitly empty.
-            destination="",
+            # fetch_deliver carries both standing waypoints and the perception
+            # label; the single-route commands leave them empty (the
+            # orchestrator then falls back to its own defaults).
+            destination=destination or "",
+            label=label or "",
             start_step="",
             dry_run=bool(dry_run),
             event_token="",

@@ -10,8 +10,10 @@ etc.) would implement without touching orchestrator integration.
 
 from __future__ import annotations
 
+import array
 import json
 import queue
+import sys
 import time
 import wave
 from abc import ABC, abstractmethod
@@ -105,6 +107,93 @@ def load_vosk_config(path: str) -> VoskConfig:
     return VoskConfig(language=language, model_path=model_path, sample_rate=sample_rate)
 
 
+class Resampler:
+    """int16 mono PCM from `in_rate` to `out_rate`, pure python, streaming.
+
+    WHY. The workstation's ALC245 codec (and most laptop codecs) only runs at
+    44.1 kHz and above through ALSA, and the container has no PulseAudio to
+    resample for it, so a 16 kHz Vosk stream cannot be opened directly. The
+    microphone adapter therefore opens the device at its own rate and feeds
+    Vosk through this. An integer ratio (48 k -> 16 k) averages each group of
+    samples (a box filter, which also attenuates the aliasing band); any other
+    ratio interpolates linearly. Speech for a command vocabulary does not need
+    better than that, and no numpy/scipy is required, so the offline tests run
+    anywhere.
+    """
+
+    def __init__(self, in_rate: int, out_rate: int) -> None:
+        self.in_rate, self.out_rate = int(in_rate), int(out_rate)
+        if self.in_rate <= 0 or self.out_rate <= 0:
+            raise ValueError("sample rates must be positive")
+        if self.in_rate < self.out_rate:
+            raise ValueError("only downsampling is supported (%d -> %d)" % (in_rate, out_rate))
+        self.ratio = self.in_rate // self.out_rate if self.in_rate % self.out_rate == 0 else 0
+        self._carry = array.array("h")          # samples not yet consumed
+        self._pos = 0.0                         # fractional read position (linear path)
+
+    @property
+    def identity(self) -> bool:
+        return self.in_rate == self.out_rate
+
+    def process(self, audio: bytes) -> bytes:
+        if self.identity:
+            return bytes(audio)
+        data = array.array("h")
+        data.frombytes(bytes(audio[: len(audio) - (len(audio) % 2)]))
+        if sys.byteorder != "little":
+            data.byteswap()
+        samples = self._carry + data
+        out = array.array("h")
+        if self.ratio:
+            n = len(samples) // self.ratio
+            r = self.ratio
+            for i in range(n):
+                block = samples[i * r:(i + 1) * r]
+                out.append(int(round(sum(block) / float(r))))
+            self._carry = samples[n * r:]
+        else:
+            step = self.in_rate / float(self.out_rate)
+            pos = self._pos
+            last = len(samples) - 1
+            while pos < last:
+                i = int(pos)
+                frac = pos - i
+                out.append(int(round(samples[i] * (1.0 - frac) + samples[i + 1] * frac)))
+                pos += step
+            keep = max(int(pos), 0)
+            self._carry = samples[keep:]
+            self._pos = pos - keep
+        if sys.byteorder != "little":
+            out.byteswap()
+        return out.tobytes()
+
+
+def grammar_json(words) -> str:
+    """Vosk's constrained-grammar argument: a JSON list of words plus "[unk]".
+
+    With a grammar the small model decodes only this vocabulary (anything else
+    becomes [unk]), which is what makes a 40 MB model dependable on a command
+    set. Duplicates are dropped and the order is stable, so the same lexicon
+    always yields the same grammar.
+    """
+    seen, out = set(), []
+    for word in words:
+        w = str(word).strip().lower()
+        if w and w not in seen:
+            seen.add(w)
+            out.append(w)
+    if "[unk]" not in seen:
+        out.append("[unk]")
+    return json.dumps(out)
+
+
+def make_recognizer(vosk_module, model, sample_rate: int, grammar=None):
+    """KaldiRecognizer with or without a grammar. `grammar` is a word list."""
+    if grammar:
+        return vosk_module.KaldiRecognizer(model, int(sample_rate), grammar_json(grammar))
+    return vosk_module.KaldiRecognizer(model, int(sample_rate))
+
+
 def _emit_result_json(payload: str, on_final: TranscriptCallback) -> None:
     result = json.loads(payload)
     text = result.get("text", "").strip()
@@ -159,7 +248,14 @@ class VoskMicrophoneAdapter(Adapter):
     scripts/list_microphones.py to find an index.
     """
 
-    def __init__(self, model_path: str, sample_rate: int = 16000, device: Optional[int] = None):
+    #: PortAudio buffering. With its default ("high") latency the workstation's
+    #: ALC245 codec overflows on 200 ms blocks even with an empty callback
+    #: (measured: 5 overflows in 6 s); 0.5 s gives none. Every overflow is a
+    #: fault that clears a pending confirmation, so this is not cosmetic.
+    DEFAULT_LATENCY_SEC = 0.5
+
+    def __init__(self, model_path: str, sample_rate: int = 16000, device: Optional[int] = None,
+                 grammar=None, latency_sec: Optional[float] = None):
         try:
             import vosk
         except ImportError as exc:
@@ -184,10 +280,10 @@ class VoskMicrophoneAdapter(Adapter):
 
         self._vosk = vosk
         self._sd = sd
-        self.sample_rate = int(sample_rate)
+        self.sample_rate = int(sample_rate)          # what the MODEL hears
         self.device = device
         self._model = vosk.Model(model_path)
-        self._recognizer = vosk.KaldiRecognizer(self._model, self.sample_rate)
+        self._recognizer = make_recognizer(vosk, self._model, self.sample_rate, grammar)
         self._stream = None
         # Five 200 ms blocks cap latency and memory at roughly one second.
         # Older audio is unsafe command input and is discarded, never replayed.
@@ -195,14 +291,33 @@ class VoskMicrophoneAdapter(Adapter):
         self._fault_queue = queue.Queue(maxsize=1)
 
         # Surface a clear error now if the requested device cannot be opened,
-        # rather than failing silently inside the audio callback thread.
+        # rather than failing silently inside the audio callback thread. A
+        # codec that refuses 16 kHz (ALSA, no PulseAudio) is opened at its own
+        # default rate and resampled down for the model.
+        self.device_rate = self._usable_device_rate(sd, device, self.sample_rate)
+        self._resampler = Resampler(self.device_rate, self.sample_rate)
+        self.latency_sec = float(self.DEFAULT_LATENCY_SEC if latency_sec is None else latency_sec)
+
+    @staticmethod
+    def _usable_device_rate(sd, device, wanted: int) -> int:
+        """`wanted` if the device takes it, else its default rate; raises if neither."""
         try:
-            sd.check_input_settings(device=device, samplerate=self.sample_rate, channels=1)
-        except Exception as exc:
-            raise MissingDependencyError(
-                f"microphone device {device!r} is not usable at {self.sample_rate} Hz / 1 channel: {exc}. "
-                "Run scripts/list_microphones.py to see available devices."
-            ) from exc
+            sd.check_input_settings(device=device, samplerate=wanted, channels=1)
+            return int(wanted)
+        except Exception as first:
+            try:
+                info = sd.query_devices(device, "input") if device is not None else sd.query_devices(kind="input")
+                native = int(round(float(info["default_samplerate"])))
+                if native < wanted:
+                    raise ValueError("device default rate %d Hz is below %d Hz" % (native, wanted))
+                sd.check_input_settings(device=device, samplerate=native, channels=1)
+                return native
+            except Exception as exc:
+                raise MissingDependencyError(
+                    f"microphone device {device!r} is not usable at {wanted} Hz / 1 channel ({first}) "
+                    f"nor at its own default rate ({exc}). Run scripts/list_microphones.py to see "
+                    "available devices."
+                ) from exc
 
     def run(
         self,
@@ -210,7 +325,7 @@ class VoskMicrophoneAdapter(Adapter):
         should_stop: Callable[[], bool],
         on_fault: Optional[FaultCallback] = None,
     ) -> None:
-        blocksize = int(self.sample_rate * 0.2)  # 200ms chunks
+        blocksize = int(self.device_rate * 0.2)  # 200ms chunks at the DEVICE rate
 
         def callback(indata, frames, time_info, status):  # noqa: ARG001 - sounddevice signature
             # PortAudio callbacks must stay short and deterministic. Recognition
@@ -225,11 +340,12 @@ class VoskMicrophoneAdapter(Adapter):
             self._audio_queue.put(bytes(indata))
 
         self._stream = self._sd.RawInputStream(
-            samplerate=self.sample_rate,
+            samplerate=self.device_rate,
             blocksize=blocksize,
             device=self.device,
             dtype="int16",
             channels=1,
+            latency=self.latency_sec,
             callback=callback,
         )
         with self._stream:
@@ -244,7 +360,7 @@ class VoskMicrophoneAdapter(Adapter):
                     data = self._audio_queue.get(timeout=0.1)
                 except queue.Empty:
                     continue
-                emit_final_result(self._recognizer, data, on_final)
+                emit_final_result(self._recognizer, self._resampler.process(data), on_final)
 
     def close(self) -> None:
         if self._stream is not None:
@@ -257,7 +373,7 @@ class WavFileAdapter(Adapter):
     examples use); raises MissingDependencyError with a clear message for
     anything else rather than mis-decoding it."""
 
-    def __init__(self, model_path: str, wav_path: str, sample_rate: int = 16000):
+    def __init__(self, model_path: str, wav_path: str, sample_rate: int = 16000, grammar=None):
         try:
             import vosk
         except ImportError as exc:
@@ -284,7 +400,7 @@ class WavFileAdapter(Adapter):
             )
         self._wf = wf
         self._model = vosk.Model(model_path)
-        self._recognizer = vosk.KaldiRecognizer(self._model, wf.getframerate())
+        self._recognizer = make_recognizer(vosk, self._model, wf.getframerate(), grammar)
 
     def run(
         self,

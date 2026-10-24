@@ -1,0 +1,74 @@
+# lexicon.yaml -- the slot grammar behind the spoken fetch-and-deliver task.
+#
+#   "go to the desk, pick up a can, go to the chair, and pass me, over"
+#
+# Consumed by src/g1_voice_control/commands.py:TaskParser. The parser tokenises
+# a FINAL transcript longest-phrase-first against the words below, skips every
+# unknown word (the, a, to, please ...), splits into segments on connectors /
+# commas / a second verb, fills one frame per segment (verb, object, place,
+# recipient) and lowers the frames to navigate / grasp / handover steps. Only
+# ONE resulting shape is dispatched -- navigate, grasp, navigate, handover --
+# as /orchestrator/run_fetch_deliver. Anything else is reported as understood
+# but unsupported, never guessed into a different task.
+#
+# Adding a synonym is one line here; no code changes.
+
+# --- verb classes ----------------------------------------------------------------
+# Multi-word verbs ("pick up", "hand over") win over their single words.
+verb_classes:
+  navigate: [go, walk, head, move, come, proceed, navigate, drive, return]
+  grasp:    [pick up, pick, grab, grasp, take, lift up, lift, catch]
+  fetch:    [bring, fetch, get, carry]
+  give:     [hand over, handover, hand, pass, give, deliver]
+
+# --- objects: spoken word -> perception label ---------------------------------------
+# The fine-tuned detector knows one class, "bottle" (the 14 cm can).
+objects:
+  can: bottle
+  cans: bottle
+  bottle: bottle
+  bottles: bottle
+  cup: bottle
+  cups: bottle
+  water: bottle
+  soda: bottle
+  drink: bottle
+
+# --- places: spoken alias -> STANDING waypoint name -------------------------------
+# Values are records in slam/maps/<map>/standing_waypoints.yaml, recorded with
+# `rosrun g1_slam record_waypoints.py`. The orchestrator refuses a name that is
+# not in the active map, so this list is the only place vocabulary meets the map.
+places:
+  desk: table_01
+  table: table_01
+  dining table: table_01
+  work table: table_01
+  chair: chair_01
+  seat: chair_01
+  sofa: chair_01
+
+# --- priors (world knowledge, not grammar) -------------------------------------------
+# Where a graspable object lives when the sentence does not say ("pick up a can"
+# alone), and where the user is for "pass me" / "bring it to me" without a place.
+object_location_prior:
+  bottle: table_01
+user_location_prior: chair_01
+
+# --- role words ---------------------------------------------------------------------
+recipients: [me, to me, you, to you]
+connectors: [and, then]
+# Multi-word phrases discarded whole because their first word collides with a
+# real entry ("can" is a drink). Single-word fillers are not needed: unknown
+# words are skipped anyway.
+fillers: [can you, can i, can we, could you, would you]
+
+# --- protocol words -------------------------------------------------------------------
+wake_words: [lucy, william, robot]
+# The utterance is complete once an end word is heard; everything before it is
+# parsed as one command (voice_control_node.py).
+end_words: [over]
+
+# --- recogniser vocabulary -------------------------------------------------------------
+# Extra words added to the Vosk grammar so function words have somewhere to land
+# instead of being forced onto a command word.
+grammar_extra_words: [the, a, an, to, at, please, it, that, this, me, my, up, then, now, ok, okay]

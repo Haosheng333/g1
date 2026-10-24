@@ -10,10 +10,12 @@ from orchestrator import routes as r  # noqa: E402
 
 
 class RouteCatalogue(unittest.TestCase):
-    def test_the_four_routes_exist(self):
-        """auto_release was deleted: its steps live inside deliver now."""
+    def test_the_five_routes_exist(self):
+        """auto_release was deleted: its steps live inside deliver now.
+        fetch_deliver is the spoken task on the modules that have run on the robot."""
         self.assertEqual(sorted(r.ROUTES),
-                         ["deliver", "deliver_task", "grasp", "navigate_report"])
+                         ["deliver", "deliver_task", "fetch_deliver", "grasp",
+                          "navigate_report"])
         self.assertFalse(hasattr(r, "AUTO_RELEASE"))
 
     def test_unknown_route_raises_listing_the_known_ones(self):
@@ -182,6 +184,61 @@ class StartStepResume(unittest.TestCase):
                 self.assertEqual(
                     [s.name for s in skipped] + [s.name for s in to_run], route.step_names
                 )
+
+
+class FetchDeliverIsTheSpokenTask(unittest.TestCase):
+    """navigate -> grasp -> navigate -> handover on arm_grasp + handover_node."""
+
+    STEPS = r.FETCH_DELIVER.step_names
+
+    def test_it_is_ready_in_principle(self):
+        """Nothing it requires is an unresolved decision: all runtime probes."""
+        self.assertTrue(r.FETCH_DELIVER.ready_in_principle, r.FETCH_DELIVER.blockers())
+        for key in r.FETCH_DELIVER.requires:
+            self.assertEqual(caps.capability(key).unresolved, "", key)
+
+    def test_it_uses_the_tested_stack_not_arm_planning(self):
+        self.assertIn(caps.ARM_GRASP, r.FETCH_DELIVER.requires)
+        self.assertIn(caps.REMOTE_HANDS, r.FETCH_DELIVER.requires)
+        self.assertIn(caps.HANDOVER_NODE, r.FETCH_DELIVER.requires)
+        for key in (caps.ARM_PLANNING, caps.ARM_CONTROL, caps.HAND, caps.TACTILE_HANDOVER,
+                    caps.PLANNER_FRAME_CONVERSION, caps.PERCEPTION_EXTRINSICS,
+                    caps.STOW_POSE, caps.HANDOVER_POSE, caps.HOME_POSE):
+            self.assertNotIn(key, r.FETCH_DELIVER.requires, key)
+
+    def test_the_order_is_main_process_s_plan(self):
+        for before, after in (
+            ("enable_motion", "navigate_to_pickup"),
+            ("navigate_to_pickup", "settle_at_pickup"),
+            ("settle_at_pickup", "detect_object"),         # camera read on a still base
+            ("detect_object", "plan_grasp_point"),
+            ("plan_grasp_point", "execute_grasp"),          # planned before anything moves
+            ("execute_grasp", "record_held_object"),        # state written after the grasp
+            ("record_held_object", "hand_back_arms"),
+            ("hand_back_arms", "navigate_to_recipient"),    # @walking_task: hand back first
+            ("navigate_to_recipient", "settle_at_recipient"),
+            ("settle_at_recipient", "handover_start"),      # arm plans from a still base
+            ("handover_start", "await_handover"),
+            ("await_handover", "hand_back_arms_after_handover"),
+        ):
+            self.assertLess(self.STEPS.index(before), self.STEPS.index(after),
+                            "%s must precede %s" % (before, after))
+
+    def test_no_arm_moves_before_the_grasp_is_planned(self):
+        planned = self.STEPS.index("plan_grasp_point")
+        for step in r.FETCH_DELIVER.steps[:planned]:
+            self.assertNotEqual(step.capability, caps.ARM_GRASP, step.name)
+
+    def test_both_waypoints_are_required_and_resolved_up_front(self):
+        self.assertIn("fetch_deliver", r.ROUTES_NEEDING_DESTINATION)
+        self.assertIn("fetch_deliver", r.ROUTES_USING_STANDING_WAYPOINTS)
+
+    def test_the_pickup_and_delivery_drives_are_distinct_actions(self):
+        actions = {s.name: s.action for s in r.FETCH_DELIVER.steps}
+        self.assertEqual(actions["navigate_to_pickup"], "navigate_standing")
+        self.assertEqual(actions["navigate_to_recipient"], "navigate_standing_destination")
+        # Never the semantic.yaml interface: a standing pose takes no approach offset.
+        self.assertNotIn("navigate", actions.values())
 
 
 if __name__ == "__main__":

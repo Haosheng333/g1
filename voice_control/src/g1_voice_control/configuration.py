@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
+from typing import Optional
 
-from g1_voice_control.commands import CommandMatcher, CommandSpec
+from g1_voice_control.commands import CommandMatcher, CommandSpec, TaskParser
+
+CONFIRMATION_MODES = ("confirm", "cancel_window")
 
 
 @dataclass(frozen=True)
@@ -13,6 +17,28 @@ class CommandsConfig:
     confirmation_window_sec: float
     targets: dict
     command_specs: tuple
+    #: Parsed config/lexicon.yaml, or None when `lexicon` is unset. With it the
+    #: spoken fetch-and-deliver task is recognised; without it only the exact
+    #: phrases are.
+    lexicon: Optional[dict] = None
+    confirmation_mode: str = "confirm"
+
+    def task_parser(self) -> Optional[TaskParser]:
+        return TaskParser(self.lexicon) if self.lexicon else None
+
+    def matcher(self) -> CommandMatcher:
+        return CommandMatcher(list(self.command_specs), self.task_parser())
+
+
+def load_lexicon(path: str) -> dict:
+    import yaml
+
+    with open(path, "r", encoding="utf-8") as stream:
+        raw = yaml.safe_load(stream) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path}: lexicon must be a mapping")
+    TaskParser(raw)  # validates: raises on a lexicon with no verbs or places
+    return raw
 
 
 def load_commands_config(path: str) -> CommandsConfig:
@@ -24,6 +50,10 @@ def load_commands_config(path: str) -> CommandsConfig:
     window = float(raw.get("confirmation_window_sec", 8.0))
     if not math.isfinite(window) or window <= 0:
         raise ValueError("confirmation_window_sec must be a finite number greater than zero")
+
+    mode = str(raw.get("confirmation_mode", "confirm") or "confirm").strip()
+    if mode not in CONFIRMATION_MODES:
+        raise ValueError(f"confirmation_mode must be one of {CONFIRMATION_MODES}, got {mode!r}")
 
     phrases = raw.get("phrases")
     if not isinstance(phrases, dict):
@@ -61,10 +91,21 @@ def load_commands_config(path: str) -> CommandsConfig:
             )
         targets[command_id] = target
 
+    lexicon = None
+    lexicon_path = raw.get("lexicon")
+    if lexicon_path:
+        if not isinstance(lexicon_path, str):
+            raise ValueError("lexicon must be a path string")
+        if not os.path.isabs(lexicon_path):
+            lexicon_path = os.path.join(os.path.dirname(os.path.abspath(path)), lexicon_path)
+        lexicon = load_lexicon(lexicon_path)
+
     command_specs = tuple(command_specs)
     CommandMatcher(command_specs)
     return CommandsConfig(
         confirmation_window_sec=window,
         targets=targets,
         command_specs=command_specs,
+        lexicon=lexicon,
+        confirmation_mode=mode,
     )

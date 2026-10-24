@@ -101,7 +101,8 @@ class TestRosRouteClient(unittest.TestCase):
         self.assertEqual(proxy.service_name, "/orchestrator/run_grasp")
         self.assertEqual(
             proxy.calls[-1],
-            {"route": "grasp", "target": "bottle", "destination": "", "start_step": "", "dry_run": False, "event_token": ""},
+            {"route": "grasp", "target": "bottle", "destination": "", "label": "", "start_step": "",
+             "dry_run": False, "event_token": ""},
         )
         self.assertTrue(result.success)
 
@@ -114,6 +115,20 @@ class TestRosRouteClient(unittest.TestCase):
         self.assertEqual(proxy.service_name, "/orchestrator/run_deliver")
         self.assertEqual(proxy.calls[-1]["target"], "sofa")
         self.assertEqual(proxy.calls[-1]["dry_run"], True)
+
+    def test_fetch_deliver_maps_to_run_fetch_deliver_with_both_waypoints(self):
+        self.FakeServiceProxy._next_response = self.FakeResponse(success=True, message="ok")
+        client = self.oc.RosRouteClient()
+        client.call_route("fetch_deliver", target="table_01", dry_run=False,
+                          destination="chair_01", label="bottle")
+
+        proxy = client._proxies["fetch_deliver"]
+        self.assertEqual(proxy.service_name, "/orchestrator/run_fetch_deliver")
+        self.assertEqual(
+            proxy.calls[-1],
+            {"route": "fetch_deliver", "target": "table_01", "destination": "chair_01",
+             "label": "bottle", "start_step": "", "dry_run": False, "event_token": ""},
+        )
 
     def test_blockers_and_failure_fields_pass_through(self):
         self.FakeServiceProxy._next_response = self.FakeResponse(

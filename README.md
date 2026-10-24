@@ -116,6 +116,7 @@ driven to with `goto_waypoint.py` for now. See `slam/README.md` section 7b.
 | Route | Real run | Why |
 |---|---|---|
 | `navigate_report` | ✅ **executes end to end** | navigation + perception only; no unresolved contract |
+| `fetch_deliver` | ✅ ready in principle, dry-run verified | the spoken task on standing waypoints + perception + arm_grasp + handover_node; see `orchestrator/README.md` |
 | `grasp` | ❌ refused at preflight | `perception_extrinsics`, `stow_pose` |
 | `deliver` | ❌ refused at preflight | `handover_pose`, `home_pose`, `release_completion` |
 | `deliver_task` | ❌ refused at preflight | all five of the above |

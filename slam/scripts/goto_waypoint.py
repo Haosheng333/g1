@@ -35,47 +35,20 @@ import sys
 import threading
 
 import rospy
-import yaml
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Bool, String
 
 from g1_slam import standing_store as store
-
-# Navigation's terminal-state contract, mirrored rather than imported: g1_slam
-# must NOT depend on g1_navigation, which already depends on g1_slam (that would
-# be a dependency cycle). test_goto_waypoint.py reads navigation's own source
-# and fails if these sets ever drift apart.
-ACTIVE = ("PLANNING", "FOLLOWING", "RECOVERING")
-TERMINAL = ("SUCCESS", "FAILURE")
-GOAL_TOPIC = "/move_base_simple/goal"
+# The goal mapping and the status contract live in g1_slam.standing_goal so the
+# orchestrator's fetch_deliver route drives a standing pose through the very
+# same code. Re-exported here under their old names.
+from g1_slam.standing_goal import (  # noqa: F401 - re-exported
+    ACTIVE, GOAL_TOPIC, TERMINAL, build_goal, live_identity, quaternion_from_yaw,
+)
 
 
 def _param(name, default):
     return rospy.get_param("~" + name, default)
-
-
-def quaternion_from_yaw(yaw):
-    return (0.0, 0.0, math.sin(yaw / 2.0), math.cos(yaw / 2.0))
-
-
-def build_goal(record, frame, stamp, pose_cls=None):
-    """record -> PoseStamped in `frame`. Factored out so it can be unit-tested.
-
-    The record's x/y/yaw go through UNCHANGED: no approach offset, no rounding,
-    no frame maths. z is 0 because the pose is a standing spot on the floor and
-    `map` is the z-UP navigation frame.
-    """
-    cls = pose_cls or PoseStamped
-    goal = cls()
-    goal.header.frame_id = frame
-    goal.header.stamp = stamp
-    goal.pose.position.x = float(record["x"])
-    goal.pose.position.y = float(record["y"])
-    goal.pose.position.z = 0.0
-    (goal.pose.orientation.x, goal.pose.orientation.y,
-     goal.pose.orientation.z, goal.pose.orientation.w) = quaternion_from_yaw(
-        float(record["yaw"]))
-    return goal
 
 
 class StatusWatcher(object):
@@ -120,18 +93,6 @@ def resolve_paths():
     waypoints_file = os.path.expanduser(str(_param(
         "waypoints_file", os.path.join(map_dir, "standing_waypoints.yaml"))))
     return map_dir, waypoints_file
-
-
-def live_identity(map_dir, map_frame, robot_frame):
-    manifest = os.path.join(map_dir, "manifest.yaml")
-    if not os.path.isfile(manifest):
-        raise RuntimeError("no manifest at %s: cannot confirm which map is loaded"
-                           % manifest)
-    with open(manifest, encoding="utf-8") as fh:
-        data = yaml.safe_load(fh) or {}
-    return store.identity(str(data.get("map_name", "")).strip(),
-                          str(data.get("created_at", "")).strip(),
-                          map_frame, robot_frame)
 
 
 def do_list(waypoints_file):

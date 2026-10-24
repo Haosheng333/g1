@@ -15,6 +15,10 @@ string target        # PICKUP: the semantic waypoint to drive to, and the percep
 # the pickup waypoint. Empty is REFUSED for a route that has a delivery leg;
 # routes with a single leg ignore it.
 string destination
+# Perception label of the object to pick up ("bottle"). Used by fetch_deliver,
+# whose `target` is a STANDING waypoint name and so cannot double as the label
+# the way the older routes' `target` does. Empty = the node's ~default_label.
+string label
 string start_step    # "" = from the beginning; else resume at this step name
 bool   dry_run       # true = force a dry run; false = use the node's enable_motion
 # Session token issued by HandoverState.mark_awaiting_pull and handed to the

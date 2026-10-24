@@ -29,14 +29,16 @@ class FakeRouteClient:
         self._result = result or RouteCallResult(success=True, message="ok")
         self.raise_exc = None
 
-    def call_route(self, command_id, target, dry_run):
-        self.calls.append({"command_id": command_id, "target": target, "dry_run": dry_run})
+    def call_route(self, command_id, target, dry_run, **slots):
+        call = {"command_id": command_id, "target": target, "dry_run": dry_run}
+        call.update(slots)
+        self.calls.append(call)
         if self.raise_exc is not None:
             raise self.raise_exc
         return self._result
 
 
-def make_dispatcher(client=None, clock=None, window=8.0, targets=None):
+def make_dispatcher(client=None, clock=None, window=8.0, targets=None, auto_dispatch=False):
     targets = targets or {"grasp": "bottle", "deliver": "sofa"}
     clock = clock or FakeClock()
     client = client or FakeRouteClient()
@@ -46,10 +48,14 @@ def make_dispatcher(client=None, clock=None, window=8.0, targets=None):
             clock=clock,
             confirmation_window_sec=window,
             target_resolver=lambda cmd: targets.get(cmd),
+            auto_dispatch_after_window=auto_dispatch,
         ),
         client,
         clock,
     )
+
+
+FETCH_SLOTS = {"target": "table_01", "destination": "chair_01", "label": "bottle"}
 
 
 def confirm_and_execute(dispatcher):
@@ -159,7 +165,7 @@ class TestBusyRejection(unittest.TestCase):
         release = threading.Event()
 
         class BlockingClient(FakeRouteClient):
-            def call_route(self, command_id, target, dry_run):
+            def call_route(self, command_id, target, dry_run, **slots):
                 self.calls.append({"command_id": command_id, "target": target, "dry_run": dry_run})
                 entered.set()
                 release.wait(1.0)
@@ -246,6 +252,107 @@ class TestServiceFailureNoAutoRetry(unittest.TestCase):
         self.assertEqual(event.kind, "dispatched")
         self.assertFalse(event.route_result.success)
         self.assertIn("RuntimeError", event.route_result.message)
+
+
+class TestFetchDeliverSlots(unittest.TestCase):
+    """The spoken task carries its own waypoints and label through confirmation."""
+
+    def test_slots_reach_the_client_after_confirmation(self):
+        d, client, clock = make_dispatcher()
+        event = d.handle_command("fetch_deliver", dict(FETCH_SLOTS))
+        self.assertEqual(event.kind, "awaiting_confirmation")
+        self.assertIn("table_01", event.detail)
+        self.assertIn("chair_01", event.detail)
+        self.assertEqual(client.calls, [])
+        confirm_and_execute(d)
+        self.assertEqual(client.calls, [{
+            "command_id": "fetch_deliver", "target": "table_01", "dry_run": False,
+            "destination": "chair_01", "label": "bottle",
+        }])
+
+    def test_the_parsed_target_wins_over_the_configured_one(self):
+        d, client, clock = make_dispatcher(targets={"fetch_deliver": "configured_01"})
+        d.handle_command("fetch_deliver", dict(FETCH_SLOTS))
+        self.assertEqual(d.pending.target, "table_01")
+
+    def test_without_a_parsed_target_the_resolver_decides(self):
+        d, client, clock = make_dispatcher(targets={"fetch_deliver": None})
+        event = d.handle_command("fetch_deliver", {"destination": "chair_01", "label": "bottle"})
+        self.assertEqual(event.kind, "rejected")
+        self.assertIn("no target configured", event.detail)
+
+    def test_a_new_task_replaces_the_pending_slots(self):
+        d, client, clock = make_dispatcher()
+        d.handle_command("fetch_deliver", dict(FETCH_SLOTS))
+        d.handle_command("fetch_deliver", {"target": "table_01", "destination": "sofa_01",
+                                           "label": "bottle"})
+        confirm_and_execute(d)
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(client.calls[0]["destination"], "sofa_01")
+
+    def test_recording_client_records_the_slots(self):
+        client = RecordingDryRunClient()
+        client.call_route("fetch_deliver", "table_01", dry_run=True, destination="chair_01",
+                          label="bottle")
+        self.assertEqual(client.calls[0]["destination"], "chair_01")
+        self.assertIn("destination='chair_01'", client.call_route(
+            "fetch_deliver", "table_01", True, destination="chair_01").message)
+
+
+class TestCancelWindowMode(unittest.TestCase):
+    """g1_intellect's task_confirm_node behaviour: silence means go, cancel stops it."""
+
+    def test_the_task_dispatches_when_the_window_closes(self):
+        d, client, clock = make_dispatcher(window=3.0, auto_dispatch=True)
+        event = d.handle_command("fetch_deliver", dict(FETCH_SLOTS))
+        self.assertEqual(event.kind, "awaiting_confirmation")
+        self.assertIn("cancel", event.detail)
+        clock.advance(2.9)
+        self.assertIsNone(d.poll_expiry())
+        self.assertEqual(client.calls, [])
+        clock.advance(0.2)
+        event = d.poll_expiry()
+        self.assertEqual(event.kind, "dispatch_ready")
+        self.assertIsNotNone(event.dispatch_action)
+        self.assertEqual(d.state, State.BUSY)
+        d.execute_action(event.dispatch_action)
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(client.calls[0]["command_id"], "fetch_deliver")
+        self.assertEqual(d.state, State.IDLE)
+
+    def test_cancel_inside_the_window_dispatches_nothing(self):
+        d, client, clock = make_dispatcher(window=3.0, auto_dispatch=True)
+        d.handle_command("fetch_deliver", dict(FETCH_SLOTS))
+        clock.advance(1.0)
+        event = d.handle_command("cancel")
+        self.assertEqual(event.kind, "cancelled")
+        clock.advance(5.0)
+        self.assertIsNone(d.poll_expiry())
+        self.assertEqual(client.calls, [])
+        self.assertEqual(d.state, State.IDLE)
+
+    def test_an_explicit_confirm_still_works_early(self):
+        d, client, clock = make_dispatcher(window=3.0, auto_dispatch=True)
+        d.handle_command("fetch_deliver", dict(FETCH_SLOTS))
+        confirm_and_execute(d)
+        self.assertEqual(len(client.calls), 1)
+        clock.advance(5.0)
+        self.assertIsNone(d.poll_expiry(), "a dispatched task must not dispatch twice")
+
+    def test_a_task_heard_while_busy_is_rejected_not_queued(self):
+        d, client, clock = make_dispatcher(window=3.0, auto_dispatch=True)
+        d.state = State.BUSY
+        event = d.handle_command("fetch_deliver", dict(FETCH_SLOTS))
+        self.assertEqual(event.kind, "rejected")
+        clock.advance(5.0)
+        self.assertIsNone(d.poll_expiry())
+
+    def test_confirm_mode_still_expires_on_silence(self):
+        d, client, clock = make_dispatcher(window=3.0, auto_dispatch=False)
+        d.handle_command("fetch_deliver", dict(FETCH_SLOTS))
+        clock.advance(3.1)
+        self.assertEqual(d.poll_expiry().kind, "expired")
+        self.assertEqual(client.calls, [])
 
 
 class TestDryRunClientMakesNoRealCalls(unittest.TestCase):

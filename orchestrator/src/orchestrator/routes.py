@@ -252,7 +252,7 @@ _DELIVER_PHASE_RENAMES = {
 
 #: Routes whose delivery leg needs a second waypoint. `run` refuses these with
 #: an empty `destination` rather than silently driving to the pickup waypoint.
-ROUTES_NEEDING_DESTINATION = ("deliver_task",)
+ROUTES_NEEDING_DESTINATION = ("deliver_task", "fetch_deliver")
 
 DELIVER_TASK = Route(
     name="deliver_task",
@@ -270,7 +270,99 @@ DELIVER_TASK = Route(
 )
 
 
-ROUTES = {r.name: r for r in (NAVIGATE_REPORT, GRASP, DELIVER, DELIVER_TASK)}
+# --- fetch_deliver: the spoken task, on the modules that have run on this robot ---
+#
+#   "go to the desk, pick up a can, go to the chair, and pass me, over"
+#
+# WHY A SEPARATE ROUTE. `deliver_task` is built on arm_planning / arm_control /
+# hand_control and stays NOT_READY on unresolved poses and extrinsics. What has
+# actually been exercised on the G1 is a different set of interfaces:
+#
+#   navigation   STANDING waypoints (slam/maps/<map>/standing_waypoints.yaml),
+#                driven through /move_base_simple/goal with NO approach offset
+#   perception   /perception/get_object_position, already in torso_link, which
+#                is the frame arm_grasp plans in -- so no frame conversion
+#   arm_grasp    /g1_arm_simple/{plan,execute}_grasp_from_point: NN IK + voxel
+#                A*, pregrasp, hand pre_grasp, approach, grasp_5f, lift, retract,
+#                home -- all inside that node, exactly as grasp_point.py drives it
+#   handover     handover_node (/handover/start, /handover/state): the held arm
+#                to the handover pose, g1_hands' tactile monitor armed, and on a
+#                detected pull: release, settle, GoHomeArm
+#
+# This is g1_intellect main_process's navigate -> grasp -> navigate -> handover
+# plan, sequenced here through DIP's own interfaces. The orchestrator still
+# implements none of it: every step is one service call or one topic wait.
+#
+# ORDER, and why:
+#   * the whole grasp is PLANNED (plan_grasp_point, no motion) before anything
+#     reaches for the object, so an unreachable point fails with the planner's
+#     own reason while the arm is still parked;
+#   * record_held_object follows a successful execute_grasp: it is the ONLY
+#     writer of held-object state, and the handover steps read it;
+#   * hand_back_arms (release_arm_control) comes BEFORE the delivery drive, as
+#     main_process's @walking_task does: with the arm back at home holding the
+#     can, the G1's own controller should own the arms while it walks. The arm
+#     node refuses the hand-back if an arm is not home; that is reported, and
+#     the robot then walks with the SDK holding the arm, as main_process does;
+#   * handover_start only after the chassis has settled, so the arm does not
+#     plan from a rocking base; await_handover then waits for the human pull
+#     with the execution lock held, and a timeout releases NOTHING.
+#
+# `target` and `destination` are STANDING waypoint names; `label` is the
+# perception class. The node resolves both waypoints against the active map
+# before preflight, so a missing record or a map mismatch is a blocker, not a
+# surprise after the first drive.
+
+FETCH_DELIVER = Route(
+    name="fetch_deliver",
+    description=(
+        "Spoken task: drive to the pickup standing pose, detect and grasp the object "
+        "with arm_grasp, drive to the recipient's standing pose, hand it over on a "
+        "tactile pull through handover_node"
+    ),
+    requires=(caps.LOCALIZATION, caps.MAP, caps.JOINT_STATES, caps.NAVIGATION,
+              caps.MOTION_GATE, caps.PERCEPTION, caps.ARM_GRASP, caps.REMOTE_HANDS,
+              caps.HANDOVER_NODE),
+    steps=(
+        Step("await_localization", "await_localization", caps.LOCALIZATION),
+        Step("enable_motion", "enable_motion", caps.MOTION_GATE, motion=True),
+        Step("navigate_to_pickup", "navigate_standing", caps.NAVIGATION, motion=True,
+             description="exact standing pose `target` via /move_base_simple/goal, "
+                         "no approach offset, guarded by saw_active"),
+        Step("settle_at_pickup", "settle_chassis",
+             description="let the base stop rocking before the camera is read"),
+        Step("detect_object", "detect_object", caps.PERCEPTION,
+             description="/perception/get_object_position(label) in torso_link"),
+        Step("plan_grasp_point", "plan_grasp_point", caps.ARM_GRASP,
+             description="/g1_arm_simple/plan_grasp_from_point: the whole grasp planned, "
+                         "no motion"),
+        Step("execute_grasp", "execute_grasp_point", caps.ARM_GRASP, motion=True,
+             description="/g1_arm_simple/execute_grasp_from_point: pregrasp, pre_grasp, "
+                         "approach, grasp_5f, lift, retract, home"),
+        Step("record_held_object", "record_held_object",
+             description="the ONLY writer of held-object state"),
+        Step("hand_back_arms", "release_arm_control", caps.ARM_GRASP, motion=True,
+             description="arms back to the robot's own controller before walking"),
+        Step("navigate_to_recipient", "navigate_standing_destination", caps.NAVIGATION,
+             motion=True, description="exact standing pose `destination`"),
+        Step("settle_at_recipient", "settle_chassis"),
+        Step("handover_start", "handover_start", caps.HANDOVER_NODE, motion=True,
+             description="/handover/start: held arm to the handover pose, tactile "
+                         "monitor armed; returns once armed"),
+        Step("await_handover", "await_handover", caps.HANDOVER_NODE,
+             description="wait on /handover/state for done; a timeout disarms and "
+                         "releases nothing"),
+        Step("hand_back_arms_after_handover", "release_arm_control", caps.ARM_GRASP,
+             motion=True, description="GoHomeArm has run inside handover_node; hand "
+                                      "the arms back"),
+    ),
+)
+
+#: Routes whose `target` / `destination` are STANDING waypoint names that the
+#: node resolves against the active map before preflight.
+ROUTES_USING_STANDING_WAYPOINTS = ("fetch_deliver",)
+
+ROUTES = {r.name: r for r in (NAVIGATE_REPORT, GRASP, DELIVER, DELIVER_TASK, FETCH_DELIVER)}
 
 
 def resolve_route(name: str) -> Route:

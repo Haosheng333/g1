@@ -22,6 +22,8 @@
   <exec_depend>arm_control</exec_depend>
   <exec_depend>handover</exec_depend>
   <exec_depend>orchestrator</exec_depend>
+  <!-- fetch_deliver.launch: the arm_grasp node (g1_arm_simple). -->
+  <exec_depend>arm_grasp</exec_depend>
   <!-- Optional spoken-command frontend. full_system.launch keeps it disabled
        unless voice_control:=true is passed explicitly. -->
   <exec_depend>g1_voice_control</exec_depend>

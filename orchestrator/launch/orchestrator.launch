@@ -5,6 +5,7 @@
          /orchestrator/run_grasp             orchestrator/RunRoute
          /orchestrator/run_deliver           orchestrator/RunRoute
          /orchestrator/run_deliver_task      orchestrator/RunRoute  <- full task
+         /orchestrator/run_fetch_deliver     orchestrator/RunRoute  <- spoken task
          /orchestrator/run_auto_release      orchestrator/RunRoute
          /orchestrator/status                std_msgs/String (latched)
 
@@ -19,14 +20,27 @@
 
        The grasp route is permanently NOT_READY for a real run: it needs the
        unresolved perception to arm_planning frame contract.
+
+       fetch_deliver is the route the voice command runs ("go to the desk,
+       pick up a can, go to the chair, and pass me"): standing waypoints,
+       perception, arm_grasp and handover_node: the modules that have run
+       on this robot. target / destination are standing waypoint names of
+       map_name (slam/maps/<map_name>/standing_waypoints.yaml):
+
+         rosservice call /orchestrator/run_fetch_deliver \
+           "{target: table_01, destination: chair_01, label: bottle}"
   -->
   <arg name="config" default="$(find orchestrator)/config/orchestrator.yaml"/>
   <arg name="enable_motion" default="false"/>
   <arg name="side" default="right"/>
+  <!-- Map whose standing waypoints fetch_deliver resolves against. Pass the
+       same map_name as the localization launch. -->
+  <arg name="map_name" default="current"/>
 
   <node pkg="orchestrator" type="orchestrator_node.py" name="orchestrator" output="screen">
     <rosparam command="load" file="$(arg config)"/>
     <param name="enable_motion" type="bool" value="$(arg enable_motion)"/>
     <param name="side" value="$(arg side)"/>
+    <param name="map_name" value="$(arg map_name)"/>
   </node>
 </launch>

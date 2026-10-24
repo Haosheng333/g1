@@ -151,6 +151,14 @@ class Rig(object):
     """Both real nodes, wired to each other through the in-process bus."""
 
     def __init__(self, **orch_params):
+        # Sibling test files install their own rospy stub at import time, and
+        # orchestrator_node is imported once per process by whichever file
+        # discover loads first. Rebind BOTH production modules to THIS file's
+        # stub, so the injected CLOCK is the clock they read regardless of
+        # import order (test_node_safety does the same for itself).
+        sys.modules["rospy"] = ROSPY
+        monitor_mod.rospy = ROSPY
+        orch_mod.rospy = ROSPY
         BUS.clear()
         del PROXIES[:]
         CLOCK["t"] = 1000.0
