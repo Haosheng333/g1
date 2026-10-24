@@ -2,14 +2,21 @@
 """Readiness checklist for the fetch-and-deliver pipeline, then the dry run.
 
     tools/fetch_deliver_check.py --side left --map-name lab_map_DIP
+    tools/fetch_deliver_check.py --until-ready        # re-run every 5 s until READY (or --timeout)
     tools/fetch_deliver_check.py --no-dryrun          # checklist only
     tools/fetch_deliver_check.py --no-perception-call # do not query the camera
 
 Every line is PASS / WAIT / FAIL with the reason, in the order the route needs
-things. WAIT is a latched topic that has not arrived yet (localization, joint
-states): usually a matter of seconds, or of the robot not being connected.
-Nothing here moves the robot: the only service called for real is perception's
-(a camera read) and the orchestrator's with dry_run: true.
+things: relocalization first (slam_manager and relocalizer status, fitness),
+then navigation, perception, arm, hands, handover, orchestrator and the voice
+node. WAIT is a latched topic that has not arrived yet or a localization still
+searching: usually a matter of seconds, or of the robot not being connected.
+
+The last line is the verdict: READY TO SPEAK (every item PASS, the orchestrator
+in the expected motion mode, the voice node listening and dispatching for real)
+or NOT READY with what is missing. Nothing here moves the robot: the only
+services called for real are perception's (a camera read) and the
+orchestrator's with dry_run: true.
 """
 import argparse
 import os
@@ -18,10 +25,13 @@ import sys
 import time
 
 import rospy
+import rosnode
 import rosservice
 import rostopic
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Float32, String
 from sensor_msgs.msg import JointState
+
+SENTENCE = "go to the desk, pick up a can, go to the chair, and pass me, over"
 
 PASS, WAIT, FAIL = "PASS", "WAIT", "FAIL"
 RESULTS = []
@@ -71,6 +81,31 @@ def check_latched_bool(item, topic, timeout):
     else:
         report(WAIT, item, "%s is False (not localized yet)" % topic)
     return bool(msg.data)
+
+
+def check_relocalization(timeout):
+    """slam_manager's verdict, the relocalizer's own status and its fit quality."""
+    localized = check_latched_bool("localization", "/slam/manager/state", timeout)
+    try:
+        status = rospy.wait_for_message("/slam/manager/status", String, timeout=2.0).data
+        report(PASS if localized else WAIT, "slam_manager status", status)
+    except rospy.ROSException:
+        report(WAIT if publishers("/slam/manager/status") else FAIL, "slam_manager status",
+               "/slam/manager/status not received" if publishers("/slam/manager/status")
+               else "/slam/manager/status has no publisher (localization.launch not running?)")
+    try:
+        status = rospy.wait_for_message("/slam/relocalizer/status", String, timeout=2.0).data
+        report(PASS if localized else WAIT, "relocalizer status", status)
+    except rospy.ROSException:
+        report(WAIT if publishers("/slam/relocalizer/status") else FAIL, "relocalizer status",
+               "/slam/relocalizer/status not received" if publishers("/slam/relocalizer/status")
+               else "/slam/relocalizer/status has no publisher")
+    try:
+        fit = rospy.wait_for_message("/slam/relocalizer/fitness", Float32, timeout=2.0).data
+        report(PASS if localized else WAIT, "relocalizer fitness", "%.3f (scan-to-map fit; lower is better)" % fit)
+    except rospy.ROSException:
+        report(WAIT, "relocalizer fitness", "/slam/relocalizer/fitness not received (published while matching)")
+    return localized
 
 
 def check_joint_states(timeout):
@@ -154,6 +189,37 @@ def check_standing_waypoints(map_name):
         report(FAIL, "standing waypoints", str(exc))
 
 
+def check_voice(expect_voice):
+    """The voice node: up, listening on a microphone, and dispatching for real."""
+    try:
+        nodes = rosnode.get_node_names()
+    except Exception as exc:  # noqa: BLE001
+        report(FAIL, "voice node", "cannot list nodes: %s" % exc)
+        return False
+    if "/voice_control_node" not in nodes:
+        if expect_voice:
+            report(FAIL, "voice node", "/voice_control_node is not running (VOICE=true starts it)")
+            return False
+        report(WAIT, "voice node", "not running; commands go through rosservice only")
+        return False
+    mode = str(rospy.get_param("/voice_control_node/input_mode", "microphone"))
+    dry = bool(rospy.get_param("/voice_control_node/dry_run_backend", True))
+    confirm = str(rospy.get_param("/voice_control_node/confirmation_mode", "") or "confirm")
+    device = str(rospy.get_param("/voice_control_node/input_device", "") or "default")
+    ok = True
+    if mode != "microphone":
+        report(WAIT, "voice input", "input_mode=%s (not listening to a microphone)" % mode)
+        ok = False
+    else:
+        report(PASS, "voice input", "microphone device %s, confirmation_mode=%s" % (device, confirm))
+    if dry:
+        report(WAIT, "voice dispatch", "dry_run_backend=true: commands are recognised but NOT sent to the orchestrator")
+        ok = False
+    else:
+        report(PASS, "voice dispatch", "dry_run_backend=false: a confirmed command calls /orchestrator/run_fetch_deliver")
+    return ok
+
+
 def dry_run(label):
     from orchestrator.srv import RunRoute
     print("\n== dry run: /orchestrator/run_fetch_deliver target=table_01 destination=chair_01 label=%s" % label)
@@ -178,26 +244,15 @@ def dry_run(label):
     return True
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--side", default="left")
-    ap.add_argument("--map-name", default="lab_map_DIP")
-    ap.add_argument("--label", default="bottle")
-    ap.add_argument("--wait", type=float, default=5.0, help="seconds to wait for each latched topic")
-    ap.add_argument("--no-dryrun", action="store_true")
-    ap.add_argument("--no-perception-call", action="store_true")
-    args = ap.parse_args(rospy.myargv(sys.argv)[1:])
-
-    try:
-        rospy.init_node("fetch_deliver_check", anonymous=True)
-    except Exception as exc:  # noqa: BLE001
-        print("[FAIL] roscore: %s" % exc)
-        return 2
+def run_once(args):
+    del RESULTS[:]
     print("== fetch_deliver readiness  (side=%s map=%s label=%s)  master=%s"
           % (args.side, args.map_name, args.label, os.environ.get("ROS_MASTER_URI", "")))
 
-    print("-- slam / navigation")
-    check_latched_bool("localization", "/slam/manager/state", args.wait)
+    print("-- relocalization")
+    check_relocalization(args.wait)
+
+    print("-- navigation")
     check_topic("map", "/map")
     check_joint_states(args.wait)
     check_services("navigation services", ["/navigation/navigate", "/navigation/enable_motion"])
@@ -222,27 +277,87 @@ def main():
     check_handover(args.side)
 
     print("-- orchestrator")
+    motion_ok = False
     if check_services("orchestrator route", ["/orchestrator/run_fetch_deliver"]):
         try:
             status = rospy.wait_for_message("/orchestrator/status", String, timeout=3.0).data
-            mode = "MOTION ENABLED" if "MOTION" in status and "dry-run" not in status else "dry run"
-            report(PASS, "orchestrator mode", status)
+            motion_on = "MOTION ENABLED" in status
+            if args.expect_motion and not motion_on:
+                report(WAIT, "orchestrator mode", status + "  (expected MOTION ENABLED; restart with ENABLE_MOTION=true)")
+            elif not args.expect_motion and motion_on:
+                report(WAIT, "orchestrator mode", status + "  (expected a dry run; restart with ENABLE_MOTION=false)")
+            else:
+                report(PASS, "orchestrator mode", status)
+                motion_ok = True
         except rospy.ROSException:
             report(WAIT, "orchestrator mode", "/orchestrator/status not received")
+
+    print("-- voice")
+    voice_ok = check_voice(args.expect_voice)
 
     if not args.no_dryrun:
         dry_run(args.label)
 
     counts = {k: sum(1 for s, _i, _d in RESULTS if s == k) for k in (PASS, WAIT, FAIL)}
     print("\n== %d PASS, %d WAIT, %d FAIL" % (counts[PASS], counts[WAIT], counts[FAIL]))
-    if counts[FAIL]:
-        print("   fix every FAIL, re-run `check`, then restart the orchestrator with ENABLE_MOTION=true")
+    if counts[FAIL] or counts[WAIT]:
+        pending = [i for s_, i, _d in RESULTS if s_ != PASS]
+        print("   NOT READY. Still open: " + ", ".join(pending))
+        if counts[FAIL]:
+            print("   fix every FAIL (the detail names the owning launch / script), then re-run `check`")
+        else:
+            print("   WAIT items usually clear on their own: `check --until-ready` keeps watching")
         return 1
-    if counts[WAIT]:
-        print("   WAIT items usually clear on their own; re-run `check`")
-        return 1
-    print("   ready: ENABLE_MOTION=true tools/fetch_deliver_pipeline.sh restart orchestrator, then run the route")
+    if voice_ok and motion_ok and args.expect_motion:
+        print("   READY TO SPEAK. Say:  \"%s\"" % SENTENCE)
+        print("   then \"confirm\" within 8 s. The robot WILL MOVE.")
+    elif voice_ok and motion_ok:
+        print("   READY (dry run). Say:  \"%s\"  then \"confirm\"; nothing moves." % SENTENCE)
+    else:
+        print("   READY for a typed command: rosservice call /orchestrator/run_fetch_deliver "
+              "\"{target: table_01, destination: chair_01, label: %s}\"" % args.label)
     return 0
+
+
+def _bool(text):
+    return str(text).strip().lower() in ("1", "true", "yes", "on")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--side", default="left")
+    ap.add_argument("--map-name", default="lab_map_DIP")
+    ap.add_argument("--label", default="bottle")
+    ap.add_argument("--wait", type=float, default=5.0, help="seconds to wait for each latched topic")
+    ap.add_argument("--expect-motion", default="true",
+                    help="true: the orchestrator must report MOTION ENABLED to be ready (default)")
+    ap.add_argument("--expect-voice", default="true",
+                    help="true: the voice node must be listening and dispatching to be ready (default)")
+    ap.add_argument("--until-ready", action="store_true", help="repeat every --interval seconds until ready")
+    ap.add_argument("--interval", type=float, default=5.0)
+    ap.add_argument("--timeout", type=float, default=300.0, help="give up --until-ready after this many seconds")
+    ap.add_argument("--no-dryrun", action="store_true")
+    ap.add_argument("--no-perception-call", action="store_true")
+    args = ap.parse_args(rospy.myargv(sys.argv)[1:])
+    args.expect_motion = _bool(args.expect_motion)
+    args.expect_voice = _bool(args.expect_voice)
+
+    try:
+        rospy.init_node("fetch_deliver_check", anonymous=True)
+    except Exception as exc:  # noqa: BLE001
+        print("[FAIL] roscore: %s" % exc)
+        return 2
+
+    deadline = time.time() + args.timeout
+    while True:
+        code = run_once(args)
+        if code == 0 or not args.until_ready or rospy.is_shutdown():
+            return code
+        if time.time() >= deadline:
+            print("   gave up after %.0fs" % args.timeout)
+            return code
+        print("   ... re-checking in %.0fs (Ctrl+C to stop)\n" % args.interval)
+        time.sleep(args.interval)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@
                              runs on PC2, see below)
          arm_grasp           g1_arm_simple: NN IK + voxel A* grasp pipeline
          handover.launch     handover_node (arm:=side) + g1_hands' tactile monitor
-         orchestrator        /orchestrator/run_fetch_deliver (DRY RUN by default)
+         orchestrator        /orchestrator/run_fetch_deliver, MOTION ENABLED by default
          voice_control       OFF unless voice_control:=true (Vosk, English model)
 
        NOT started here, start by hand (they live on PC2 / need a terminal):
@@ -19,17 +19,17 @@
        perception_local_camera:=true starts the driver on this host instead,
        for a camera plugged into the workstation.
 
-       SAFE BY DEFAULT. Launched as-is nothing moves: the orchestrator runs
-       every route as a dry run and navigation's motion gate is shut.
+       MOTION IS ENABLED BY DEFAULT (enable_motion:=true): a
+       run_fetch_deliver call moves the robot once its preflight is clean.
+       Navigation's gate starts shut; the route opens it itself and shuts it
+       again on every exit path. Rehearse first with enable_motion:=false, or
+       with dry_run: true in the request:
 
          roslaunch system_bringup fetch_deliver.launch map_name:=lab_map_DIP \
              joint_mode:=relay joint_input_topic:=/arm/joint_states
          rosservice call /orchestrator/run_fetch_deliver \
-             "{target: table_01, destination: chair_01, label: bottle}"   # dry run
-
-       A real run needs enable_motion:=true AND a clean preflight (the dry run
-       lists every blocker). The route opens the motion gate itself and shuts
-       it again on every exit path.
+             "{target: table_01, destination: chair_01, label: bottle, dry_run: true}"
+         tools/fetch_deliver_check.py        # PASS/WAIT/FAIL per module, relocalization, voice
 
        target / destination are STANDING waypoint names recorded with
        `rosrun g1_slam record_waypoints.py` into
@@ -63,9 +63,9 @@
   <arg name="handover" default="true"/>
   <arg name="handover_target_xyz" default="[0.35, 0.0, 0.15]"/>
 
-  <!-- orchestrator -->
+  <!-- orchestrator. enable_motion:=false turns every route into a dry run. -->
   <arg name="orchestrator" default="true"/>
-  <arg name="enable_motion" default="false"/>
+  <arg name="enable_motion" default="true"/>
 
   <!-- optional voice frontend: disabled, and dry-run against the orchestrator,
        by default. voice_dry_run_backend:=false makes it CALL run_fetch_deliver

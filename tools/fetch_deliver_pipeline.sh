@@ -2,20 +2,26 @@
 # Start, check, dry-run and stop the fetch-and-deliver pipeline, one roslaunch
 # per component, each with its own log and PID file.
 #
-#   tools/fetch_deliver_pipeline.sh start      # roscore + every component (dry run)
-#   tools/fetch_deliver_pipeline.sh check      # the readiness checklist (tools/fetch_deliver_check.py)
-#   tools/fetch_deliver_pipeline.sh dryrun     # rosservice call run_fetch_deliver (dry run)
+#   tools/fetch_deliver_pipeline.sh start      # roscore + every component, MOTION ENABLED, voice on
+#   tools/fetch_deliver_pipeline.sh check      # readiness checklist incl. relocalization and
+#                                              # "ready to speak" (tools/fetch_deliver_check.py)
+#   tools/fetch_deliver_pipeline.sh check --until-ready   # re-run every 5 s until ready
+#   tools/fetch_deliver_pipeline.sh dryrun     # rosservice call run_fetch_deliver with dry_run: true
 #   tools/fetch_deliver_pipeline.sh status     # which components are running
 #   tools/fetch_deliver_pipeline.sh stop       # stop everything it started
-#   tools/fetch_deliver_pipeline.sh restart orchestrator   # e.g. after ENABLE_MOTION=true
+#   tools/fetch_deliver_pipeline.sh restart orchestrator   # e.g. after changing ENABLE_MOTION
 #
 # Run it INSIDE the container (docker/g1.sh enter), with the robot cable up.
 # Settings are environment variables, all optional:
 #   MAP_NAME=lab_map_DIP  SIDE=left  LABEL=bottle
 #   JOINT_MODE=relay  JOINT_INPUT_TOPIC=/arm/joint_states  NETWORK_INTERFACE=
-#   ENABLE_MOTION=false        the orchestrator's motion flag (false = dry run)
+#   ENABLE_MOTION=true         the orchestrator's motion flag. DEFAULT TRUE: a run_fetch_deliver
+#                              call, spoken or typed, MOVES THE ROBOT once `check` is all PASS.
+#                              ENABLE_MOTION=false rehearses everything as a dry run.
 #   CAMERA_ON_PC2=true         false = RealSense driver on this host
-#   VOICE=false  VOICE_DEVICE=4  VOICE_DRY_RUN=true  VOICE_CONFIRM=confirm
+#   VOICE=true  VOICE_DEVICE=4  VOICE_DRY_RUN=false  VOICE_CONFIRM=confirm
+#                              the voice node starts by default and really dispatches;
+#                              say the sentence ending with "over", then "confirm"
 #   SKIP="voice"               space-separated components not to start
 #
 # Components, in start order (the names `restart`/`SKIP` use):
@@ -34,11 +40,11 @@ LABEL="${LABEL:-bottle}"
 JOINT_MODE="${JOINT_MODE:-relay}"
 JOINT_INPUT_TOPIC="${JOINT_INPUT_TOPIC:-/arm/joint_states}"
 NETWORK_INTERFACE="${NETWORK_INTERFACE:-${G1_NETWORK_INTERFACE:-}}"
-ENABLE_MOTION="${ENABLE_MOTION:-false}"
+ENABLE_MOTION="${ENABLE_MOTION:-true}"
 CAMERA_ON_PC2="${CAMERA_ON_PC2:-true}"
-VOICE="${VOICE:-false}"
+VOICE="${VOICE:-true}"
 VOICE_DEVICE="${VOICE_DEVICE:-4}"
-VOICE_DRY_RUN="${VOICE_DRY_RUN:-true}"
+VOICE_DRY_RUN="${VOICE_DRY_RUN:-false}"
 VOICE_CONFIRM="${VOICE_CONFIRM:-confirm}"
 SKIP="${SKIP:-}"
 
@@ -125,6 +131,7 @@ start_one() {
     orchestrator) wait_for 15 "orchestrator" rosservice info /orchestrator/run_fetch_deliver ;;
     camera)       wait_for 40 "camera topics from PC2" rostopic info /camera/color/image_raw ;;
     hands)        wait_for 40 "/g1_hand_$SIDE services from PC2" rosservice info "/g1_hand_$SIDE/grasp_5f" ;;
+    voice)        wait_for 40 "voice_control_node" bash -c 'rosnode list 2>/dev/null | grep -q /voice_control_node' ;;
   esac
 }
 
@@ -132,7 +139,9 @@ cmd_start() {
   echo "== fetch_deliver pipeline: start  (map=$MAP_NAME side=$SIDE enable_motion=$ENABLE_MOTION camera_on_pc2=$CAMERA_ON_PC2)"
   echo "   logs in $RUN_DIR"
   if [[ "$ENABLE_MOTION" == "true" ]]; then
-    echo "   !! ENABLE_MOTION=true: the orchestrator will MOVE the robot on the next run_fetch_deliver call"
+    echo "   !! ENABLE_MOTION=true: once \`check\` is all PASS, a run_fetch_deliver call (spoken or typed) MOVES THE ROBOT"
+  else
+    echo "   ENABLE_MOTION=false: every route runs as a dry run"
   fi
   for c in $ALL; do start_one "$c"; done
   echo "== started. Next: $0 check"
@@ -195,7 +204,8 @@ case "${1:-}" in
   stop)    cmd_stop ;;
   status)  cmd_status ;;
   restart) cmd_restart "${2:-}" ;;
-  check)   exec python3 "$HERE/fetch_deliver_check.py" --side "$SIDE" --map-name "$MAP_NAME" --label "$LABEL" "${@:2}" ;;
+  check)   exec python3 "$HERE/fetch_deliver_check.py" --side "$SIDE" --map-name "$MAP_NAME" --label "$LABEL" \
+             --expect-motion "$ENABLE_MOTION" --expect-voice "$VOICE" "${@:2}" ;;
   dryrun)  cmd_dryrun ;;
   *) sed -n 2,30p "$0"; exit 2 ;;
 esac

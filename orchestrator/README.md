@@ -112,10 +112,15 @@ rosservice call /orchestrator/run_fetch_deliver "{target: table_01, destination:
 ```
 
 `tools/fetch_deliver_pipeline.sh` starts each of these as its own `roslaunch`
-(logs and PIDs under `~/.ros/fetch_deliver/`), `tools/fetch_deliver_check.py`
-prints the readiness checklist (PASS / WAIT / FAIL per interface, the two
-standing waypoints, the handover arm, a perception read) and ends with the dry
-run; exit code 0 means a real run is possible.
+(logs and PIDs under `~/.ros/fetch_deliver/`), with motion enabled and the
+voice node dispatching for real by default (`ENABLE_MOTION=false`,
+`VOICE_DRY_RUN=true` to rehearse). `tools/fetch_deliver_check.py` prints the
+readiness checklist: relocalization first (`/slam/manager/status`,
+`/slam/relocalizer/status`, fitness), then PASS / WAIT / FAIL per interface,
+the two standing waypoints, the handover arm, a perception read, the
+orchestrator's mode and the voice node, then the dry run. Its last line is the
+verdict, `READY TO SPEAK` with the sentence to say, or `NOT READY` with the
+open items; `--until-ready` keeps re-checking while localization settles.
 
 The real backend for this route is `ArmGraspBackend`; the older routes keep
 `RosBackend` (arm_planning / arm_control / hand_control). Both share

@@ -149,15 +149,17 @@ Or, one `roslaunch` per component in the background with logs and a
 PASS/WAIT/FAIL checklist (inside the container):
 
 ```bash
-tools/fetch_deliver_pipeline.sh start          # roscore, navigation, camera (PC2), perception,
-                                               # arm_grasp, hands (PC2), handover, orchestrator (dry run)
-tools/fetch_deliver_pipeline.sh check          # readiness checklist + dry run, exit 0 = ready
-ENABLE_MOTION=true tools/fetch_deliver_pipeline.sh restart orchestrator
+tools/fetch_deliver_pipeline.sh start          # roscore, navigation, camera (PC2), perception, arm_grasp,
+                                               # hands (PC2), handover, orchestrator (MOTION ON), voice
+tools/fetch_deliver_pipeline.sh check --until-ready   # relocalization + every module; ends with
+                                                      # "READY TO SPEAK" or what is still missing
 tools/fetch_deliver_pipeline.sh stop
 ```
 
 `side` (default left) is passed to both the orchestrator and handover_node.
-`enable_motion:=true` is the only way anything moves. The Vosk model is
+Motion is ON by default in `fetch_deliver.launch` and in the script
+(`ENABLE_MOTION=false` for a dry run); the voice node starts by default and
+dispatches for real (`VOICE=false` / `VOICE_DRY_RUN=true` to change that). The Vosk model is
 downloaded explicitly with `voice_control/scripts/download_model.sh en`
 (the container has no `unzip`; the script falls back to python). The
 workstation microphone is sounddevice index 4 (`ALC245 Analog`, hw:1,0).
