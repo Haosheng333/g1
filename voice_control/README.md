@@ -1,19 +1,21 @@
 # g1_voice_control
 
-An independent voice-control frontend to the orchestrator. It recognises the
-spoken fetch-and-deliver task with a small slot grammar, plus a short allowlist
-of fixed phrases, requires a confirmation step before starting a task, and calls
-the **same** `RunRoute` services terminal control already uses. It does not
-replace terminal control and does not touch the robot/hand SDK. The
-`system_bringup` launches expose it only as an explicit opt-in and keep it
-disabled by default.
+The spoken command, as one of the orchestrator's inputs. It recognises the
+fetch-and-deliver sentence with a small slot grammar, plus a short allowlist of
+fixed phrases, requires a confirmation step, and then publishes **one**
+`g1_voice_control/TaskCommand` on `/voice/command`. The orchestrator subscribes
+to that topic (as g1_intellect's `main_process` subscribes to `/voice/intent`),
+runs the route under its own lock and preflight, and answers on
+`/orchestrator/command_result`. This package depends on no other DIP package and
+never touches the robot or hand SDK; typed `rosservice call`s to the
+orchestrator keep working beside it.
 
 ## The spoken task
 
 ```
 "go to the desk, pick up a can, go to the chair, and pass me, over"
    -> fetch_deliver  target=table_01  destination=chair_01  label=bottle
-   -> (say "confirm")  -> /orchestrator/run_fetch_deliver
+   -> (say "confirm")  -> /voice/command  -> orchestrator route fetch_deliver
 ```
 
 `src/g1_voice_control/commands.py:TaskParser` is a slot grammar configured by
@@ -61,26 +63,37 @@ lexicon vocabulary plus the fixed phrases, ~70 words), which makes the small
 English model dependable on this command set; `use_grammar:=false` restores
 free dictation.
 
-## Orchestrator service mappings
+## The orchestrator contract
 
-| Voice command | Orchestrator service | Request |
+| Topic | Type | Direction |
 |---|---|---|
-| the spoken task | `/orchestrator/run_fetch_deliver` | `target`=pickup standing pose, `destination`=delivery standing pose, `label`=perception class |
-| "开始抓取" / "start grasping" | `/orchestrator/run_grasp` | `target` from `commands.yaml` (NOT_READY route) |
-| "开始递送" / "start delivery" | `/orchestrator/run_deliver` | `target` from `commands.yaml` |
-| "查看状态" / "status" | `/orchestrator/status` (latched topic) | a read |
-| "取消任务" / "cancel task" | none | drops a pending, unconfirmed task; cannot stop a running route |
-| "确认执行" / "confirm" | (local) | confirms the pending task |
+| `/voice/command` | `g1_voice_control/TaskCommand` | published here, subscribed by the orchestrator |
+| `/orchestrator/command_result` | `g1_voice_control/TaskResult` | published by the orchestrator, matched here by `seq` |
+| `/orchestrator/status` | `std_msgs/String` (latched) | read for the "status" phrase |
 
-`start_step` is always `""` (voice never resumes a route) and `event_token`
-is `""` (it belongs to the handover monitor's release request). `side` is not
-a request field: it is the orchestrator's own config.
+`TaskCommand` carries `seq`, `command_id` (the route: `fetch_deliver`, `grasp`,
+`deliver`), `target`, `destination`, `label`, `summary` and `transcript`.
+`TaskResult` echoes `seq` and carries `accepted`, `success`, `message`,
+`blockers`, `dry_run`, `motion_issued`, `final_step`. `TopicCommandClient`
+(`src/g1_voice_control/orchestrator_client.py`) publishes one command and blocks
+until the matching result, so the dispatcher's BUSY state spans the whole route;
+it refuses to publish when nothing subscribes, so a command is never lost.
+
+| Voice command | Route | Fields |
+|---|---|---|
+| the spoken task | `fetch_deliver` | `target`=pickup standing pose, `destination`=delivery standing pose, `label`=perception class |
+| "开始抓取" / "start grasping" | `grasp` | `target` from `commands.yaml` |
+| "开始递送" / "start delivery" | `deliver` | `target` from `commands.yaml` |
+| "查看状态" / "status" | — | reads `/orchestrator/status` |
+| "取消任务" / "cancel task" | — | drops a pending, unconfirmed task; cannot stop a running route |
+| "确认执行" / "confirm" | — | confirms the pending task |
 
 ## Package layout
 
 ```
 voice_control/                          (catkin package: g1_voice_control)
 ├── package.xml, CMakeLists.txt, setup.py
+├── msg/TaskCommand.msg, msg/TaskResult.msg   # the contract the orchestrator subscribes to
 ├── requirements.txt                    # vosk, sounddevice, pyyaml -- imported lazily
 ├── config/
 │   ├── commands.yaml                   # phrases, confirmation mode/window, lexicon pointer
@@ -93,7 +106,7 @@ voice_control/                          (catkin package: g1_voice_control)
 │   ├── configuration.py                # validated YAML command/target loading -- no ROS/Vosk
 │   ├── dispatch.py                     # confirm/expire/busy/cancel state machine -- no ROS/Vosk
 │   ├── asr_adapter.py                  # Vosk mic/WAV adapters -- lazy imports
-│   └── orchestrator_client.py          # real RunRoute service calls + status topic reader
+│   └── orchestrator_client.py          # TaskCommand publisher / TaskResult matcher + status reader
 ├── scripts/
 │   ├── voice_control_node.py           # the ROS node
 │   ├── list_microphones.py             # enumerate input devices

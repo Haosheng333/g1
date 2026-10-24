@@ -4,13 +4,14 @@
 Pipeline: mic/WAV (asr_adapter) -> final transcript -> utterance assembly
 (end word "over") -> command match (commands.py: exact phrases, then the slot
 grammar for the fetch-and-deliver task) -> confirm/dispatch state machine
-(dispatch.py) -> orchestrator RunRoute services (orchestrator_client.py).
-Terminal control (rosservice call) is untouched; this is a second,
-independent frontend to the same services, not a replacement.
+(dispatch.py) -> one g1_voice_control/TaskCommand on /voice/command
+(orchestrator_client.py). The orchestrator subscribes to that topic, runs the
+route, and answers on /orchestrator/command_result. Typed control
+(rosservice call /orchestrator/run_*) is untouched.
 
     "go to the desk, pick up a can, go to the chair, and pass me, over"
         -> fetch_deliver target=table_01 destination=chair_01 label=bottle
-        -> (confirm) -> /orchestrator/run_fetch_deliver
+        -> (confirm) -> /voice/command -> orchestrator
 
 UTTERANCE ASSEMBLY. Vosk emits a final result at every pause, so a spoken
 sentence with commas arrives as several results. Each result is first tried
@@ -41,7 +42,7 @@ from g1_voice_control.asr_adapter import (
 )
 from g1_voice_control.configuration import load_commands_config
 from g1_voice_control.dispatch import Dispatcher, RecordingDryRunClient
-from g1_voice_control.orchestrator_client import RosRouteClient, StatusReader
+from g1_voice_control.orchestrator_client import StatusReader, TopicCommandClient
 from g1_voice_control.utterance import UtteranceBuffer
 
 
@@ -65,15 +66,14 @@ class VoiceControlNode:
         if dry_run_backend:
             rospy.logwarn(
                 "voice_control: dry_run_backend=true -- recognised commands will be matched and "
-                "confirmed, but NO orchestrator service will be called. Set ~dry_run_backend:=false "
-                "to enable real dispatch (it still respects the orchestrator's own enable_motion gate "
-                "and preflight -- this flag only controls whether THIS node calls the service at all)."
+                "confirmed, but NOTHING is published to the orchestrator. Set ~dry_run_backend:=false "
+                "to publish confirmed tasks on /voice/command (the orchestrator's own enable_motion "
+                "and preflight still decide whether anything moves)."
             )
             route_client = RecordingDryRunClient()
         else:
-            route_client = RosRouteClient(
-                service_wait_timeout_s=rospy.get_param("~service_wait_timeout_s", 10.0)
-            )
+            route_client = TopicCommandClient(
+                subscriber_wait_s=float(rospy.get_param("~service_wait_timeout_s", 10.0)))
 
         self._matcher = cfg.matcher()
         self._parser = self._matcher.parser
@@ -200,7 +200,10 @@ class VoiceControlNode:
         # State transitions are deliberately synchronous and non-blocking, so
         # final transcripts are handled in recognition order. Confirmation
         # creates a single-use action; only the service call goes to a worker.
-        event = self._dispatcher.handle_command(match.command_id, match.slots)
+        slots = dict(match.slots)
+        if match.command_id in ("fetch_deliver",):
+            slots["summary"] = match.summary
+        event = self._dispatcher.handle_command(match.command_id, slots)
         self._log_dispatch_event(match.command_id, event)
         self._start_action(event)
 

@@ -96,9 +96,11 @@ g1_intellect on PC2 (`rosrun hand_control start_remote_hands.sh`). See
 `arm_grasp/README.md`.
 
 `voice_control/` (package `g1_voice_control`) is built through the tracked
-relative symlink `g1_ws/src/g1_voice_control -> ../../voice_control`. It is an
-optional ROS1 frontend to the orchestrator and remains disabled by default in
-`full_system.launch`. Vosk models live under `voice_control/models/` (gitignored)
+relative symlink `g1_ws/src/g1_voice_control -> ../../voice_control`. It owns
+the `TaskCommand` / `TaskResult` messages the orchestrator subscribes to on
+`/voice/command`, so build it before (or with) the orchestrator; it is disabled
+by default in `full_system.launch` and on by default in `fetch_deliver.launch`'s
+pipeline script. Vosk models live under `voice_control/models/` (gitignored)
 and are downloaded explicitly; never add model weights to Git. Install its
 Python/audio dependencies only inside the designated ROS Noetic container, not
 into the host Python or another ROS environment. See `voice_control/README.md`.

@@ -1,20 +1,11 @@
 #!/usr/bin/env python3
-"""REAL ROS transport test: a genuine roscore, genuine rospy.Service servers
-standing in for the orchestrator (no hardware SDK and no motion backend),
-and RosRouteClient calling them over actual
-ROS service transport -- not sys.modules substitution.
+"""REAL ROS transport test: a genuine roscore, a fake orchestrator that
+subscribes to /voice/command and answers on /orchestrator/command_result with
+the real generated message types, and TopicCommandClient publishing to it.
 
-This is NOT run by `catkin_add_nosetests` (see CMakeLists.txt): those are
-pure in-process tests (test_commands.py, test_dispatch.py) or mock rospy at
-the Python-import level (test_orchestrator_client.py) specifically so they
-need no ROS master. This file needs one. Run it with:
+Not run by `catkin_add_nosetests` (those tests need no master). Run with:
 
     rostest g1_voice_control test_ros_transport.test
-
-(add a matching .test launch file, or `rosrun rostest rostest` pointed at
-this module, per your workspace's rostest setup) on a machine with ROS1
-Noetic. Untested here -- no roscore, no catkin workspace on this machine;
-verify it actually runs before relying on it.
 """
 
 from __future__ import annotations
@@ -25,100 +16,53 @@ try:
     import rospy
     import rostest
 except ImportError as exc:  # pragma: no cover - this whole file needs real ROS
-    # Skip cleanly rather than erroring, so running the offline suite
-    # (`python3 -m unittest discover`) without ROS installed reports this
-    # file as SKIPPED, not FAILED -- it is not broken, it genuinely needs a
-    # ROS environment this machine does not have. `rostest` itself (which
-    # only runs where ROS exists) is unaffected by this guard.
     raise unittest.SkipTest(f"test_ros_transport.py requires a real ROS1 environment: {exc}")
 
-
-# Use the actual generated service type while hosting fake service callbacks.
-# This validates serialization and request-field mapping without starting the
-# real orchestrator node or any hardware backend.
-from orchestrator.srv import RunRoute, RunRouteResponse  # noqa: E402
+from g1_voice_control.msg import TaskCommand, TaskResult  # noqa: E402
 
 
-class FakeOrchestratorServer:
-    """Stands in for the real orchestrator node: two services, canned
-    responses, no robotics, no hardware SDK."""
+class FakeOrchestrator:
+    """Stands in for the real orchestrator node: subscribes, answers, no robotics."""
 
     def __init__(self):
-        self.received_requests = []
-        self._grasp_srv = rospy.Service("/orchestrator/run_grasp", RunRoute, self._handle_grasp)
-        self._deliver_srv = rospy.Service("/orchestrator/run_deliver", RunRoute, self._handle_deliver)
+        self.received = []
+        self._pub = rospy.Publisher("/orchestrator/command_result", TaskResult, queue_size=10)
+        self._sub = rospy.Subscriber("/voice/command", TaskCommand, self._on_command)
 
-    def _handle_grasp(self, req):
-        self.received_requests.append(("grasp", req))
-        return RunRouteResponse(
-            success=False,
-            message="NOT_READY: 1 blocker(s); no step executed",
-            steps_completed=[],
-            steps_skipped=[],
-            blockers=["perception_extrinsics (perception): unverified"],
-            final_step="",
-            motion_issued=False,
-            dry_run=req.dry_run,
-            object_state="NONE",
-            transfer_verified=False,
-        )
-
-    def _handle_deliver(self, req):
-        self.received_requests.append(("deliver", req))
-        return RunRouteResponse(
-            success=True,
-            message="route 'deliver' completed (14 steps)",
-            steps_completed=["require_held_object"],
-            steps_skipped=[],
-            blockers=[],
-            final_step="execute_retract_home",
-            motion_issued=not req.dry_run,
-            dry_run=req.dry_run,
-            object_state="NONE",
-            transfer_verified=False,
-        )
-
-    def shutdown(self):
-        self._grasp_srv.shutdown()
-        self._deliver_srv.shutdown()
+    def _on_command(self, msg):
+        self.received.append(msg)
+        self._pub.publish(TaskResult(
+            seq=msg.seq, command_id=msg.command_id, accepted=True,
+            success=(msg.command_id == "fetch_deliver"),
+            message="DRY RUN: route %r completed" % msg.command_id if msg.command_id == "fetch_deliver"
+            else "NOT_READY: 1 blocker(s); no step executed",
+            blockers=[] if msg.command_id == "fetch_deliver" else ["perception_extrinsics (perception): unverified"],
+            dry_run=True, motion_issued=False, final_step=""))
 
 
-class TestRosTransport(unittest.TestCase):
+class TestTopicTransport(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        rospy.init_node("test_ros_transport", anonymous=True)
-        cls.fake_server = FakeOrchestratorServer()
+        rospy.init_node("test_voice_topic_transport")
+        cls.fake = FakeOrchestrator()
+        from g1_voice_control.orchestrator_client import TopicCommandClient
+        cls.client = TopicCommandClient(result_timeout_s=10.0, subscriber_wait_s=10.0)
 
-    @classmethod
-    def tearDownClass(cls):
-        cls.fake_server.shutdown()
-
-    def setUp(self):
-        self.fake_server.received_requests.clear()
-
-    def test_grasp_call_travels_over_real_transport_and_reports_not_ready(self):
-        from g1_voice_control.orchestrator_client import RosRouteClient
-
-        client = RosRouteClient(service_wait_timeout_s=5.0)
-        result = client.call_route("grasp", target="bottle", dry_run=False)
-
-        self.assertFalse(result.success)
-        self.assertEqual(result.blockers, ("perception_extrinsics (perception): unverified",))
-        self.assertEqual(len(self.fake_server.received_requests), 1)
-        route_name, req = self.fake_server.received_requests[0]
-        self.assertEqual(req.target, "bottle")
-        self.assertEqual(req.dry_run, False)
-
-    def test_deliver_call_round_trips_dry_run_flag(self):
-        from g1_voice_control.orchestrator_client import RosRouteClient
-
-        client = RosRouteClient(service_wait_timeout_s=5.0)
-        result = client.call_route("deliver", target="sofa", dry_run=True)
-
-        self.assertTrue(result.success)
+    def test_fetch_deliver_round_trip(self):
+        result = self.client.call_route("fetch_deliver", target="table_01", dry_run=False,
+                                        destination="chair_01", label="bottle")
+        self.assertTrue(result.success, result.message)
         self.assertTrue(result.dry_run)
-        self.assertFalse(result.motion_issued, "a dry-run request must not report motion_issued")
+        cmd = self.fake.received[-1]
+        self.assertEqual((cmd.command_id, cmd.target, cmd.destination, cmd.label),
+                         ("fetch_deliver", "table_01", "chair_01", "bottle"))
+
+    def test_blockers_cross_the_wire(self):
+        result = self.client.call_route("grasp", target="bottle", dry_run=False)
+        self.assertFalse(result.success)
+        self.assertEqual(len(result.blockers), 1)
+        self.assertIn("perception_extrinsics", result.blockers[0])
 
 
 if __name__ == "__main__":
-    rostest.rosrun("g1_voice_control", "test_ros_transport", TestRosTransport)
+    rostest.rosrun("g1_voice_control", "test_ros_transport", TestTopicTransport)

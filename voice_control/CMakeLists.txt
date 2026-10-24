@@ -2,15 +2,29 @@ cmake_minimum_required(VERSION 3.0.2)
 project(g1_voice_control)
 
 find_package(catkin REQUIRED COMPONENTS
-  orchestrator
   rospy
   std_msgs
+  message_generation
 )
 
 catkin_python_setup()
 
+# The command contract the orchestrator subscribes to. voice_control owns it,
+# as g1_voice_intent owns IntentAction in g1_intellect; the orchestrator
+# depends on this package, not the other way round.
+add_message_files(
+  FILES
+  TaskCommand.msg
+  TaskResult.msg
+)
+
+generate_messages(
+  DEPENDENCIES
+  std_msgs
+)
+
 catkin_package(
-  CATKIN_DEPENDS orchestrator rospy std_msgs
+  CATKIN_DEPENDS rospy std_msgs message_runtime
 )
 
 catkin_install_python(PROGRAMS
@@ -25,7 +39,7 @@ install(PROGRAMS
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
-install(DIRECTORY config launch
+install(DIRECTORY config launch msg
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
 

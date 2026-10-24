@@ -3,11 +3,11 @@
   <name>g1_voice_control</name>
   <version>0.1.0</version>
   <description>
-    Independent voice-control frontend to the orchestrator: spoken commands
-    (Vosk ASR) matched against a small allowlist, confirmed, and dispatched
-    through the same RunRoute services terminal control already uses.
-    Disabled by default; available as an opt-in include from system_bringup's
-    full-system launch.
+    The spoken command for the orchestrator: Vosk ASR, a slot grammar for the
+    fetch-and-deliver sentence plus a small phrase allowlist, a confirmation
+    step, and a confirmed TaskCommand published on /voice/command. The
+    orchestrator subscribes to it and answers on /orchestrator/command_result;
+    this package depends on no other DIP package.
   </description>
 
   <maintainer email="huan0387@e.ntu.edu.sg">huangyiting</maintainer>
@@ -17,9 +17,8 @@
 
   <depend>rospy</depend>
   <depend>std_msgs</depend>
-  <!-- orchestrator's RunRoute.srv is consumed at runtime (import orchestrator.srv),
-       so the orchestrator package must be built first in the same workspace. -->
-  <depend>orchestrator</depend>
+  <build_depend>message_generation</build_depend>
+  <exec_depend>message_runtime</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
 
   <test_depend>rostest</test_depend>

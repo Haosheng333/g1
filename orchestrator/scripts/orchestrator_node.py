@@ -5,8 +5,15 @@
     /orchestrator/run_grasp            orchestrator/RunRoute
     /orchestrator/run_deliver          orchestrator/RunRoute
     /orchestrator/run_deliver_task     orchestrator/RunRoute
-    /orchestrator/run_fetch_deliver    orchestrator/RunRoute   <- the spoken task
+    /orchestrator/run_fetch_deliver    orchestrator/RunRoute   <- the spoken task, typed
     /orchestrator/run_auto_release     orchestrator/RunRoute
+
+    /voice/command                     g1_voice_control/TaskCommand   SUBSCRIBED: the spoken task
+    /orchestrator/command_result       g1_voice_control/TaskResult    its answer, same seq
+
+The voice module is one of this node's inputs, as g1_voice_intent is
+main_process's in g1_intellect: voice_control publishes a confirmed task and
+this node runs it under the same lock and preflight as a typed service call.
 
 This package contains no robotics of its own. No IK, no TF maths, no path
 planning, no perception, no arm control, no hand control, no navigation: each
@@ -45,6 +52,7 @@ from __future__ import annotations
 
 import math
 import threading
+import types
 
 import rospy
 from sensor_msgs.msg import JointState
@@ -1024,6 +1032,11 @@ class ArmGraspBackend(RosCommon):
 
 
 class OrchestratorNode:
+    #: Where the voice module publishes a confirmed task, and where this node
+    #: answers it. The voice package owns both message types.
+    COMMAND_TOPIC = "/voice/command"
+    RESULT_TOPIC = "/orchestrator/command_result"
+
     def __init__(self) -> None:
         self.enable_motion = bool(rospy.get_param("~enable_motion", False))
         self.side = str(rospy.get_param("~side", "right"))
@@ -1054,6 +1067,67 @@ class OrchestratorNode:
         mode = "MOTION ENABLED" if self.enable_motion else "dry-run (enable_motion is false)"
         rospy.logwarn("[orchestrator] %s; arm side %s", mode, self.side)
         self.status_pub.publish(String(data="idle; %s" % mode))
+        self._result_pub = None
+        self._TaskResult = None
+
+    # ------------------------------------------------------------ voice input
+    def listen_to_voice(self) -> bool:
+        """Subscribe to the voice module's confirmed commands.
+
+        Optional at runtime: without the voice package built the node still
+        serves its typed services, and says so once.
+        """
+        try:
+            from g1_voice_control.msg import TaskCommand, TaskResult
+        except ImportError as exc:
+            rospy.logwarn("[orchestrator] voice input off: g1_voice_control messages not "
+                          "importable (%s); typed service calls still work", exc)
+            return False
+        self._TaskResult = TaskResult
+        self._result_pub = rospy.Publisher(self.RESULT_TOPIC, TaskResult, queue_size=10)
+        rospy.Subscriber(self.COMMAND_TOPIC, TaskCommand, self.handle_voice_command, queue_size=5)
+        rospy.loginfo("[orchestrator] listening for spoken tasks on %s", self.COMMAND_TOPIC)
+        return True
+
+    def handle_voice_command(self, msg) -> None:
+        """One confirmed spoken task. Runs the route exactly as a typed call would."""
+        rospy.loginfo("[orchestrator] voice command %d: %s target=%r destination=%r label=%r | %s",
+                      msg.seq, msg.command_id, msg.target, msg.destination, msg.label,
+                      msg.summary or msg.transcript)
+        # Off the subscriber thread: a route can run for minutes and the lock
+        # refuses a second command meanwhile, so a late duplicate is answered
+        # "busy" at once instead of queueing behind the running route.
+        threading.Thread(target=self._run_voice_command, args=(msg,), daemon=True).start()
+
+    def _run_voice_command(self, msg) -> None:
+        route_name = (msg.command_id or "").strip()
+        request = types.SimpleNamespace(
+            route=route_name, target=msg.target, destination=msg.destination, label=msg.label,
+            start_step="", dry_run=False, event_token="")
+        if route_name not in routes_mod.ROUTES:
+            self._publish_result(msg, accepted=False, response=RunRouteResponse(
+                success=False, dry_run=not self.enable_motion,
+                message="unknown route %r (known: %s)" % (route_name, ", ".join(sorted(routes_mod.ROUTES)))))
+            return
+        response = self.run(route_name, request)
+        # Accepted = the request got as far as preflight. An up-front refusal
+        # (lock busy, missing destination) carries no steps, blockers or step.
+        accepted = bool(response.steps_completed) or bool(response.blockers) \
+            or bool(response.final_step)
+        self._publish_result(msg, accepted=accepted, response=response)
+
+    def _publish_result(self, msg, accepted: bool, response) -> None:
+        if self._result_pub is None or self._TaskResult is None:
+            return
+        result = self._TaskResult(
+            seq=msg.seq, command_id=msg.command_id, accepted=bool(accepted),
+            success=bool(response.success), message=response.message or "",
+            blockers=list(response.blockers or []), dry_run=bool(response.dry_run),
+            motion_issued=bool(response.motion_issued), final_step=response.final_step or "")
+        (rospy.loginfo if response.success else rospy.logwarn)(
+            "[orchestrator] voice command %d -> success=%s: %s", msg.seq, response.success,
+            response.message)
+        self._result_pub.publish(result)
 
     # ------------------------------------------------------------------ handler
     def make_handler(self, route_name: str):
@@ -1283,6 +1357,8 @@ def main() -> None:
     # Not a route: the monitor's request is validated and recorded for the task
     # that already owns the execution lock. See handle_release_request.
     rospy.Service("/orchestrator/run_auto_release", RunRoute, node.handle_release_request)
+    # The spoken task: voice_control publishes, this node runs.
+    node.listen_to_voice()
     rospy.loginfo("[orchestrator] routes up: %s", ", ".join(sorted(routes_mod.ROUTES)))
     rospy.spin()
 

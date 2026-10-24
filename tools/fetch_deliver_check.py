@@ -189,13 +189,31 @@ def check_standing_waypoints(map_name):
         report(FAIL, "standing waypoints", str(exc))
 
 
+def subscribers(topic):
+    try:
+        _pubs, subs = rostopic.get_topic_list()
+        for name, _type, nodes in subs:
+            if name == topic:
+                return list(nodes)
+    except Exception:  # noqa: BLE001
+        pass
+    return []
+
+
 def check_voice(expect_voice):
-    """The voice node: up, listening on a microphone, and dispatching for real."""
+    """The voice node: up, listening on a microphone, and publishing for real."""
     try:
         nodes = rosnode.get_node_names()
     except Exception as exc:  # noqa: BLE001
         report(FAIL, "voice node", "cannot list nodes: %s" % exc)
         return False
+    subs = subscribers("/voice/command")
+    if any("orchestrator" in n for n in subs):
+        report(PASS, "orchestrator listens to voice", "/voice/command subscribed by %s" % ", ".join(subs))
+    else:
+        report(FAIL, "orchestrator listens to voice",
+               "/voice/command has no orchestrator subscriber (orchestrator not running, or the "
+               "g1_voice_control messages are not built)")
     if "/voice_control_node" not in nodes:
         if expect_voice:
             report(FAIL, "voice node", "/voice_control_node is not running (VOICE=true starts it)")
@@ -213,11 +231,11 @@ def check_voice(expect_voice):
     else:
         report(PASS, "voice input", "microphone device %s, confirmation_mode=%s" % (device, confirm))
     if dry:
-        report(WAIT, "voice dispatch", "dry_run_backend=true: commands are recognised but NOT sent to the orchestrator")
+        report(WAIT, "voice dispatch", "dry_run_backend=true: commands are recognised but NOT published to the orchestrator")
         ok = False
     else:
-        report(PASS, "voice dispatch", "dry_run_backend=false: a confirmed command calls /orchestrator/run_fetch_deliver")
-    return ok
+        report(PASS, "voice dispatch", "dry_run_backend=false: a confirmed command is published on /voice/command")
+    return ok and any("orchestrator" in n for n in subs)
 
 
 def dry_run(label):

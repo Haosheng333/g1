@@ -33,6 +33,10 @@
   <exec_depend>arm_control</exec_depend>
   <!-- handover/ArmMonitor.srv: the arm request carries side + session_token. -->
   <exec_depend>handover</exec_depend>
+  <!-- The spoken command: voice_control publishes g1_voice_control/TaskCommand on
+       /voice/command and this node answers with TaskResult. Runtime only; the
+       node starts without the voice package built, just without that input. -->
+  <exec_depend>g1_voice_control</exec_depend>
   <!-- fetch_deliver: arm_grasp's g1_arm_simple services, standing waypoints
        read through g1_slam.standing_goal, and the PoseStamped goal it builds. -->
   <exec_depend>arm_grasp</exec_depend>

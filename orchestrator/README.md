@@ -31,9 +31,17 @@ Request: `route` (optional guard), `target`, `destination`, `label`,
 
 ```
 "go to the desk, pick up a can, go to the chair, and pass me, over"
-    voice_control -> /orchestrator/run_fetch_deliver
-        {target: table_01, destination: chair_01, label: bottle}
+    voice_control  ->  /voice/command  (g1_voice_control/TaskCommand)
+        {command_id: fetch_deliver, target: table_01, destination: chair_01, label: bottle}
+    orchestrator   ->  runs the route, answers on /orchestrator/command_result (TaskResult, same seq)
 ```
+
+The voice module is one of this node's **inputs**: `OrchestratorNode.listen_to_voice`
+subscribes to `/voice/command` and `handle_voice_command` runs the named route
+through the very same `run()` as a typed service call, so the lock, the
+preflight and the dry-run rule apply unchanged. A second command while a route
+runs is answered `accepted: false` at once. Without the `g1_voice_control`
+messages built the node starts anyway and says the voice input is off.
 
 This is g1_intellect `main_process`'s navigate -> grasp -> navigate -> handover
 plan, sequenced through DIP's own interfaces, and it is a **separate route**
